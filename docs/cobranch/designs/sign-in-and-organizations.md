@@ -208,7 +208,10 @@ editing a custom role passes the same first two checks for every permission it l
 - **Granting and revoking** take `org.grants.manage` and every permission of the role, at that scope. The rule for
   revoking is **Agreed** here; the principals design stated it for granting only.
 - **Custom roles** have a name, a description and any organization or repository permissions their definer holds.
-  Editing one changes every grant of it on the next request; one still granted can't be deleted.
+  Editing one changes every grant of it on the next request, and takes the permissions it listed as well as those it
+  lists, since dropping one revokes it from every holder; one still granted can't be deleted, nor one the organization
+  gives everyone who joins. Deleting one cancels the invitations that offered it. A custom role belongs to one
+  organization, which grants it beside the built-in roles; its name is unique among them.
 - **What this slice checks.** `orgs.create`, `org.read`, `org.manage`, `org.members.manage`, `org.grants.manage` and
   `org.principals.manage`. The other permissions already exist in the catalog, and custom roles can hold them, but
   nothing checks them until their slices arrive.
@@ -277,7 +280,8 @@ Organization pages live under the organization’s slug, such as `/acme/members`
 reserved slugs.
 
 The [design system](design-system.md#screens) has drawn Sign in, the organization step of sign-up, the organization's
-home and its members. The roles, API keys, settings and profile pages are drawn there before the Console builds them.
+home and its members. The roles and settings pages followed them with the same components; the API keys and profile
+pages are drawn there before the Console builds them.
 
 ## Configuration
 
@@ -311,7 +315,8 @@ These tables fill in the principals design's [data model](principals-and-permiss
 
 ![This slice’s tables: who a user is, how they prove it, and where they belong](sign-in-and-organizations/er.svg)
 
-Every row an organization owns carries its `org_id`, and every query is scoped by it. Built-in roles, Anonymous and the
+Every row an organization owns carries its `org_id`, and every query is scoped by it: a custom role's `org_id` is its
+organization's, and a built-in role's is null. Built-in roles, Anonymous and the
 installation’s scope are rows the first migrations write.
 
 ## Rollout

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Cobranch</title>
   <!-- The Console's first screens: sign in, the welcome page (create, join, invitations), and an organization's home,
-       members and settings under its slug. The design system's colours (docs/cobranch/designs/design-system), the REST
+       members, roles and settings under its slug. The design system's colours (docs/cobranch/designs/design-system), the REST
        API at the URL config.json names, and the Auth server at the other URL it names. Caddy serves this page for
        every path, and it routes on the path: the organization's slug first, then its page. -->
   <style>
@@ -168,6 +168,14 @@
     .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--color-border-default); background: var(--color-bg-raised); font-size: 12px; margin-right: 4px; }
     .perms { display: flex; flex-wrap: wrap; gap: 4px; }
     .perms code { font-size: 12px; padding: 1px 6px; border-radius: 6px; background: var(--color-bg-raised); border: 1px solid var(--color-border-default); }
+    .chip button { all: unset; cursor: pointer; margin-left: 4px; color: var(--color-fg-muted); }
+    .chip button:hover { color: var(--color-status-danger-fg); }
+    .grant { display: inline-flex; gap: 4px; align-items: center; margin-top: 4px; }
+    .grant select { padding: 2px 6px; font-size: 13px; }
+    .picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; }
+    .picks label { display: flex; gap: 6px; align-items: center; font-weight: 400; font-size: 13px; }
+    .picks label code { font-size: 12px; }
+    .picks input { width: auto; }
   </style>
 </head>
 <body class="centered">
@@ -193,7 +201,8 @@
     let config = { restUrl: "", authUrl: "" };
     let me = null;
     let orgs = [];
-    let roles = [];
+    let roles = []; // the roles the organization shown grants
+    let permissions = []; // what a role at an organization may hold
 
     // api calls the REST API with the session cookie, and rejects with the problem it answered.
     async function api(method, path, body) {
@@ -246,7 +255,7 @@
       if (c.consoleUrl) base = new URL(c.consoleUrl).pathname.replace(/\/?$/, "/");
       try {
         me = await api("GET", "/me");
-        [orgs, roles] = await Promise.all([api("GET", "/me/organizations").then((d) => d.organizations), api("GET", "/roles?scope=organization").then((d) => d.roles)]);
+        [orgs, permissions] = await Promise.all([api("GET", "/me/organizations").then((d) => d.organizations), api("GET", "/permissions?scope=organization").then((d) => d.permissions)]);
       } catch (err) {
         if (err.status !== 401) throw err;
       }
@@ -307,7 +316,7 @@
       if (orgs.length) sections.push(h("p", {}, "You belong to ", orgs.map((o, i) => [i ? ", " : "", h("a", { href: base + o.slug, "data-nav": "" }, o.name)]), "."));
       if (invitations.length) {
         sections.push(h("section", { class: "panel" }, h("h3", {}, "Invitations"), ...invitations.map((inv) => h("div", { class: "row" },
-          h("div", {}, h("strong", {}, inv.orgName), h("p", {}, "as " + roleName(inv.roleId) + ", to " + inv.email + ", until " + when(inv.expiresAt))),
+          h("div", {}, h("strong", {}, inv.orgName), h("p", {}, "as " + (inv.roleName || "a member") + ", to " + inv.email + ", until " + when(inv.expiresAt))),
           h("div", {}, h("button", { class: "button small primary", type: "button", onclick: () => api("POST", "/me/invitations/" + inv.id + "/accept").then(reloadTo).catch(fail) }, "Accept"), " ",
             h("button", { class: "button small", type: "button", onclick: () => api("POST", "/me/invitations/" + inv.id + "/decline").then(() => showWelcome()).catch(fail) }, "Decline"))))));
       }
@@ -334,7 +343,6 @@
       orgs = (await api("GET", "/me/organizations")).organizations;
       go("/" + org.slug);
     }
-    const roleName = (id) => (roles.find((r) => r.id === id) || { name: "?" }).name;
     const roleSelect = (selected) => h("select", { name: "roleId" }, roles.map((r) => h("option", { value: r.id, selected: r.id === selected }, r.name)));
 
     // An organization's pages: its home, members and settings, under a bar with the switcher and the navigation.
@@ -348,8 +356,9 @@
       }
       if (org.slug !== slug) return go("/" + org.slug + (page ? "/" + page : ""), true);
       try { localStorage.setItem("cobranch.org", org.slug); } catch { /* a convenience */ }
+      roles = (await api("GET", "/orgs/" + org.slug + "/roles")).roles;
       const can = (p) => org.viewerPermissions.includes(p);
-      const pages = [["", "Home"], ["members", "Members"]];
+      const pages = [["", "Home"], ["members", "Members"], ["roles", "Roles"]];
       if (can("org.manage")) pages.push(["settings", "Settings"]);
       const link = ([p, label]) => h("a", { href: base + org.slug + (p ? "/" + p : ""), "data-nav": "", class: p === page ? "current" : "" }, label);
       const switcher = h("select", { onchange: (e) => (e.target.value === "+" ? go("/new") : go("/" + e.target.value)) },
@@ -360,11 +369,12 @@
       document.body.className = "";
       app.replaceChildren(bar, main);
       if (page === "members") return showMembers(org, main, can);
+      if (page === "roles") return showRoles(org, main, can);
       if (page === "settings" && can("org.manage")) return showSettings(org, main);
       if (page) return go("/" + org.slug);
       main.append(h("h1", {}, org.name), h("p", {}, h("code", {}, org.slug), org.acceptsJoinRequests ? " · accepts join requests" : ""),
         h("section", { class: "panel" }, h("h3", {}, "What you may do here"), h("div", { class: "perms" }, org.viewerPermissions.map((p) => h("code", {}, p)))),
-        h("section", { class: "panel" }, h("h3", {}, "Next"), h("p", {}, "Repositories, agents and the rest arrive with their slices. For now, manage ", h("a", { href: base + org.slug + "/members", "data-nav": "" }, "its members"), ".")));
+        h("section", { class: "panel" }, h("h3", {}, "Next"), h("p", {}, "Repositories, agents and the rest arrive with their slices. For now, manage ", h("a", { href: base + org.slug + "/members", "data-nav": "" }, "its members"), " and ", h("a", { href: base + org.slug + "/roles", "data-nav": "" }, "its roles"), ".")));
     }
 
     function notFound(slug) {
@@ -373,16 +383,26 @@
 
     async function showMembers(org, main, can) {
       const manage = can("org.members.manage");
+      const grants = can("org.grants.manage");
       const error = h("p", { class: "alert", hidden: true });
       const fail = (err) => { error.textContent = err.message; error.hidden = false; };
       const refresh = () => showMembers(org, main, can);
+      // A member's roles: with org.grants.manage, each revocable, and the roles they lack grantable.
+      const rolesOf = (m) => {
+        const held = m.roles.map((r) => h("span", { class: "chip" }, r.name, grants
+          ? h("button", { type: "button", title: "Revoke " + r.name, onclick: () => api("DELETE", "/orgs/" + org.slug + "/members/" + m.userId + "/roles/" + r.id).then(refresh).catch(fail) }, "×") : null));
+        const missing = roles.filter((r) => !m.roles.some((held) => held.id === r.id));
+        if (!grants || !missing.length) return held;
+        const pick = h("select", {}, missing.map((r) => h("option", { value: r.id }, r.name)));
+        return [held, h("span", { class: "grant" }, pick, h("button", { class: "button small", type: "button", onclick: () => api("POST", "/orgs/" + org.slug + "/members/" + m.userId + "/roles", { roleId: pick.value }).then(refresh).catch(fail) }, "Grant"))];
+      };
       const [members, invitations, requests] = await Promise.all([
         api("GET", "/orgs/" + org.slug + "/members").then((d) => d.members),
         manage ? api("GET", "/orgs/" + org.slug + "/invitations").then((d) => d.invitations) : [],
         manage ? api("GET", "/orgs/" + org.slug + "/join-requests").then((d) => d.joinRequests) : [],
       ]);
       const memberRow = (m) => h("tr", {}, h("td", {}, m.displayName, m.userId === me.id ? h("span", { class: "chip" }, "you") : null),
-        h("td", {}, m.roles.map((r) => h("span", { class: "chip" }, r.name))), h("td", {}, when(m.joinedAt)),
+        h("td", {}, rolesOf(m)), h("td", {}, when(m.joinedAt)),
         h("td", { class: "actions" }, m.userId === me.id
           ? h("button", { class: "button small danger", type: "button", onclick: () => api("POST", "/orgs/" + org.slug + "/leave").then(() => location.replace(base)).catch(fail) }, "Leave")
           : manage ? h("button", { class: "button small danger", type: "button", onclick: () => api("DELETE", "/orgs/" + org.slug + "/members/" + m.userId).then(refresh).catch(fail) }, "Remove") : null));
@@ -395,7 +415,7 @@
         sections.push(h("section", { class: "panel" }, h("h3", {}, "Invitations"),
           h("form", { class: "inline with-role", onsubmit: (e) => { e.preventDefault(); api("POST", "/orgs/" + org.slug + "/invitations", { email: email.value, roleId: role.value }).then(refresh).catch(fail); } },
             h("label", {}, "Email", email), h("label", {}, "Role", role), h("button", { class: "button primary", type: "submit" }, "Invite")),
-          invitations.length ? h("table", {}, h("tbody", {}, invitations.map((inv) => h("tr", {}, h("td", {}, inv.email), h("td", {}, h("span", { class: "chip" }, roleName(inv.roleId))), h("td", {}, "until " + when(inv.expiresAt)),
+          invitations.length ? h("table", {}, h("tbody", {}, invitations.map((inv) => h("tr", {}, h("td", {}, inv.email), h("td", {}, h("span", { class: "chip" }, inv.roleName || "?")), h("td", {}, "until " + when(inv.expiresAt)),
             h("td", { class: "actions" }, h("button", { class: "button small", type: "button", onclick: (e) => navigator.clipboard.writeText(inviteLink(inv)).then(() => { e.target.textContent = "Copied"; }).catch(() => {}) }, "Copy link"), " ",
               h("button", { class: "button small danger", type: "button", onclick: () => api("DELETE", "/orgs/" + org.slug + "/invitations/" + inv.id).then(refresh).catch(fail) }, "Cancel")))))) : h("p", {}, "No pending invitations. An invitee signs in with the email you invite, and accepts it on their welcome page.")));
         sections.push(h("section", { class: "panel" }, h("h3", {}, "Join requests"),
@@ -406,6 +426,48 @@
                 h("button", { class: "button small", type: "button", onclick: () => api("POST", "/orgs/" + org.slug + "/join-requests/" + r.id + "/decline").then(refresh).catch(fail) }, "Decline")));
           }))) : h("p", {}, org.acceptsJoinRequests ? "Nobody is asking to join." : "This organization doesn't accept join requests; its settings turn them on.")));
       }
+      main.replaceChildren(...sections);
+    }
+
+    // The roles page: what each role holds, and, with org.grants.manage, the organization's own roles to define,
+    // change and delete.
+    function showRoles(org, main, can) {
+      const manage = can("org.grants.manage");
+      const error = h("p", { class: "alert", hidden: true });
+      const fail = (err) => { error.textContent = err.message; error.hidden = false; };
+      const refresh = () => api("GET", "/orgs/" + org.slug + "/roles").then((d) => { roles = d.roles; showRoles(org, main, can); }).catch(fail);
+      // roleForm edits a role's definition, a new one when role is null, and saves it through save.
+      const roleForm = (role, save, cancel) => {
+        const name = h("input", { name: "name", required: true, maxlength: 50, value: role ? role.name : "", placeholder: "Release manager" });
+        const description = h("input", { name: "description", maxlength: 500, value: role ? role.description : "" });
+        const picks = permissions.map((p) => h("label", {}, h("input", { type: "checkbox", value: p, checked: !!role && role.permissions.includes(p) }), h("code", {}, p)));
+        return h("form", { onsubmit: (e) => {
+          e.preventDefault();
+          const chosen = picks.map((l) => l.firstChild).filter((c) => c.checked).map((c) => c.value);
+          save({ name: name.value, description: description.value, permissions: chosen }).then(refresh).catch(fail);
+        } },
+          h("label", {}, "Name", name), h("label", {}, "Description", description),
+          h("label", {}, "Permissions", h("span", {}, "Only what you hold here yourself."), h("div", { class: "picks" }, picks)),
+          h("div", {}, h("button", { class: "button primary", type: "submit" }, role ? "Save" : "Define"), " ", cancel ? h("button", { class: "button", type: "button", onclick: cancel }, "Cancel") : null));
+      };
+      const rows = h("tbody", {});
+      const roleRow = (r) => {
+        const row = h("tr", {}, h("td", {}, r.name, r.builtIn ? h("span", { class: "chip" }, "built in") : null, r.description ? h("p", {}, r.description) : null),
+          h("td", {}, h("div", { class: "perms" }, r.permissions.map((p) => h("code", {}, p)))),
+          h("td", { class: "actions" }, manage && !r.builtIn ? [
+            h("button", { class: "button small", type: "button", onclick: () => {
+              const editor = h("tr", {}, h("td", { colspan: 3 }, roleForm(r, (body) => api("PATCH", "/orgs/" + org.slug + "/roles/" + r.id, body), () => editor.replaceWith(row))));
+              row.replaceWith(editor);
+            } }, "Edit"), " ",
+            h("button", { class: "button small danger", type: "button", onclick: () => api("DELETE", "/orgs/" + org.slug + "/roles/" + r.id).then(refresh).catch(fail) }, "Delete"),
+          ] : null));
+        return row;
+      };
+      rows.append(...roles.map(roleRow));
+      const sections = [h("h1", {}, "Roles"), error,
+        h("section", { class: "panel" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Role"), h("th", {}, "Permissions"), h("th", {}))), rows))];
+      if (manage) sections.push(h("section", { class: "panel" }, h("h3", {}, "Define a role"), h("p", {}, "A role of this organization alone, to grant beside the built-in ones. Changing it changes every grant of it."),
+        roleForm(null, (body) => api("POST", "/orgs/" + org.slug + "/roles", body), null)));
       main.replaceChildren(...sections);
     }
 

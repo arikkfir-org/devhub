@@ -528,9 +528,12 @@ func TestMembers(t *testing.T) {
 	if _, err := f.service.Members(t.Context(), f.nia, f.acme.ID); !errors.Is(err, orgs.ErrNotFound) {
 		t.Errorf("an outsider's Members() error = %v, want not found", err)
 	}
-	roles, err := f.service.Roles(t.Context())
+	roles, err := f.service.Roles(t.Context(), f.gwen, f.acme.ID)
 	if err != nil || len(roles) != 4 || roles[0].Name != "Owner" {
 		t.Errorf("Roles() = %+v, %v", roles, err)
+	}
+	if _, err := f.service.Roles(t.Context(), f.nia, f.acme.ID); !errors.Is(err, orgs.ErrNotFound) {
+		t.Errorf("an outsider's Roles() error = %v, want not found", err)
 	}
 	held, err := f.service.Permissions(t.Context(), f.nia)
 	if err != nil || !slices.Equal(held, []string{"orgs.create"}) {

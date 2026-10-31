@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/google/uuid"
 
@@ -20,7 +21,13 @@ type Organizations interface {
 	Get(ctx context.Context, v orgs.Viewer, slug string) (orgs.Organization, error)
 	ViewerPermissions(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]string, error)
 	Update(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, settings orgs.Settings) (orgs.Organization, error)
-	Roles(ctx context.Context) ([]orgs.Role, error)
+	Roles(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Role, error)
+	BuiltInRoles(ctx context.Context) ([]orgs.Role, error)
+	CreateRole(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, in orgs.RoleInput) (orgs.Role, error)
+	UpdateRole(ctx context.Context, v orgs.Viewer, orgID, roleID uuid.UUID, in orgs.RoleInput) (orgs.Role, error)
+	DeleteRole(ctx context.Context, v orgs.Viewer, orgID, roleID uuid.UUID) error
+	GrantRole(ctx context.Context, v orgs.Viewer, orgID, userID, roleID uuid.UUID) error
+	RevokeRole(ctx context.Context, v orgs.Viewer, orgID, userID, roleID uuid.UUID) error
 	Members(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Member, error)
 	Invite(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, email string, roleID uuid.UUID) (orgs.Invitation, error)
 	Invitations(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Invitation, error)
@@ -73,6 +80,10 @@ var conflicts = map[error]string{
 	orgs.ErrAlreadyMember: "member.exists",
 	orgs.ErrLastOwner:     "org.last_owner",
 	orgs.ErrInviterGone:   "invitation.inviter_gone",
+	orgs.ErrRoleNameTaken: "role.name_taken",
+	orgs.ErrRoleInUse:     "role.in_use",
+	orgs.ErrBuiltInRole:   "role.built_in",
+	orgs.ErrGranted:       "grant.exists",
 }
 
 // fail maps the domain's errors to problems: kind names what wasn't found. Any other error stays one, which the
@@ -116,11 +127,15 @@ func nonNil[T any](s []T) []T {
 }
 
 func role(r orgs.Role) Role {
-	return Role{Id: r.ID, Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions), BuiltIn: r.BuiltIn}
+	out := Role{Id: r.ID, Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions), BuiltIn: r.BuiltIn}
+	if r.OrgID != uuid.Nil {
+		out.OrgId = &r.OrgID
+	}
+	return out
 }
 
 func invitation(i orgs.Invitation) Invitation {
-	return Invitation{Id: i.ID, OrgId: i.OrgID, OrgSlug: i.OrgSlug, OrgName: i.OrgName, Email: i.Email, RoleId: i.RoleID,
+	return Invitation{Id: i.ID, OrgId: i.OrgID, OrgSlug: i.OrgSlug, OrgName: i.OrgName, Email: i.Email, RoleId: i.RoleID, RoleName: i.RoleName,
 		CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt}
 }
 
@@ -252,19 +267,161 @@ func (a api) UpdateOrganization(ctx context.Context, req UpdateOrganizationReque
 	return UpdateOrganization200JSONResponse(shown), nil
 }
 
-// ListRoles lists the roles granted at organizations.
-func (a api) ListRoles(ctx context.Context, req ListRolesRequestObject) (ListRolesResponseObject, error) {
+// Deprecated routes announce their end with these headers (RFC 9745 and RFC 8594): /roles went when roles became
+// an organization's, and goes two minor releases later.
+const (
+	rolesDeprecation = "@1793404800" // 2026-10-31
+	rolesSunset      = "Sun, 31 Jan 2027 00:00:00 GMT"
+)
+
+// ListBuiltInRoles lists the built-in organization roles: deprecated, the organization's roles list them all.
+func (a api) ListBuiltInRoles(ctx context.Context, req ListBuiltInRolesRequestObject) (ListBuiltInRolesResponseObject, error) {
 	if _, err := viewer(ctx); err != nil {
 		return nil, err
 	}
 	if !req.Params.Scope.Valid() {
 		return nil, refuse(http.StatusBadRequest, "request.invalid", "Roles are listed at scope organization.")
 	}
-	roles, err := a.orgs.Roles(ctx)
+	roles, err := a.orgs.BuiltInRoles(ctx)
 	if err != nil {
 		return nil, fail(err, "role")
 	}
+	deprecation, sunset := rolesDeprecation, rolesSunset
+	out := ListBuiltInRoles200JSONResponse{Headers: ListBuiltInRoles200ResponseHeaders{Deprecation: &deprecation, Sunset: &sunset}}
+	out.Body.Roles = mapAll(roles, role)
+	return out, nil
+}
+
+// ListPermissions lists the permissions a role at a scope may hold.
+func (a api) ListPermissions(ctx context.Context, req ListPermissionsRequestObject) (ListPermissionsResponseObject, error) {
+	if _, err := viewer(ctx); err != nil {
+		return nil, err
+	}
+	if !req.Params.Scope.Valid() {
+		return nil, refuse(http.StatusBadRequest, "request.invalid", "Permissions are listed at scope organization.")
+	}
+	return ListPermissions200JSONResponse{Permissions: orgs.RolePermissions()}, nil
+}
+
+// ListRoles lists the roles the organization grants.
+func (a api) ListRoles(ctx context.Context, req ListRolesRequestObject) (ListRolesResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := a.orgs.Roles(ctx, v, org.ID)
+	if err != nil {
+		return nil, fail(err, "organization")
+	}
 	return ListRoles200JSONResponse{Roles: mapAll(roles, role)}, nil
+}
+
+// CreateRole defines a custom role.
+func (a api) CreateRole(ctx context.Context, req CreateRoleRequestObject) (CreateRoleResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	in := orgs.RoleInput{Name: req.Body.Name, Permissions: req.Body.Permissions}
+	if req.Body.Description != nil {
+		in.Description = *req.Body.Description
+	}
+	r, err := a.orgs.CreateRole(ctx, v, org.ID, in)
+	if err != nil {
+		return nil, fail(err, "role")
+	}
+	return CreateRole201JSONResponse(role(r)), nil
+}
+
+// UpdateRole changes what the body names about a custom role and keeps the rest.
+func (a api) UpdateRole(ctx context.Context, req UpdateRoleRequestObject) (UpdateRoleResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	roles, err := a.orgs.Roles(ctx, v, org.ID)
+	if err != nil {
+		return nil, fail(err, "organization")
+	}
+	i := slices.IndexFunc(roles, func(r orgs.Role) bool { return r.ID == req.RoleID })
+	if i < 0 {
+		return nil, fail(orgs.ErrNotFound, "role")
+	}
+	in := orgs.RoleInput{Name: roles[i].Name, Description: roles[i].Description, Permissions: roles[i].Permissions}
+	if req.Body.Name != nil {
+		in.Name = *req.Body.Name
+	}
+	if req.Body.Description != nil {
+		in.Description = *req.Body.Description
+	}
+	if req.Body.Permissions != nil {
+		in.Permissions = *req.Body.Permissions
+	}
+	r, err := a.orgs.UpdateRole(ctx, v, org.ID, req.RoleID, in)
+	if err != nil {
+		return nil, fail(err, "role")
+	}
+	return UpdateRole200JSONResponse(role(r)), nil
+}
+
+// DeleteRole deletes a custom role nobody holds.
+func (a api) DeleteRole(ctx context.Context, req DeleteRoleRequestObject) (DeleteRoleResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.orgs.DeleteRole(ctx, v, org.ID, req.RoleID); err != nil {
+		return nil, fail(err, "role")
+	}
+	return DeleteRole204Response{}, nil
+}
+
+// GrantRole gives a member a role.
+func (a api) GrantRole(ctx context.Context, req GrantRoleRequestObject) (GrantRoleResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.orgs.GrantRole(ctx, v, org.ID, req.UserID, req.Body.RoleId); err != nil {
+		return nil, fail(err, "member")
+	}
+	return GrantRole204Response{}, nil
+}
+
+// RevokeRole takes a role from a member.
+func (a api) RevokeRole(ctx context.Context, req RevokeRoleRequestObject) (RevokeRoleResponseObject, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	org, err := a.org(ctx, v, req.Org)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.orgs.RevokeRole(ctx, v, org.ID, req.UserID, req.RoleID); err != nil {
+		return nil, fail(err, "grant")
+	}
+	return RevokeRole204Response{}, nil
 }
 
 // ListMembers lists the organization's members.
@@ -296,7 +453,7 @@ func (a api) RemoveMember(ctx context.Context, req RemoveMemberRequestObject) (R
 	if err != nil {
 		return nil, err
 	}
-	if err := a.orgs.RemoveMember(ctx, v, org.ID, req.User); err != nil {
+	if err := a.orgs.RemoveMember(ctx, v, org.ID, req.UserID); err != nil {
 		return nil, fail(err, "member")
 	}
 	return RemoveMember204Response{}, nil

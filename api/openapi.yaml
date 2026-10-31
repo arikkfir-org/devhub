@@ -181,8 +181,9 @@ paths:
           $ref: "#/components/responses/Problem"
   /roles:
     get:
-      operationId: listRoles
-      summary: The roles granted at a scope, the built-in ones first.
+      operationId: listBuiltInRoles
+      deprecated: true
+      summary: The built-in roles granted at a scope. Deprecated, since roles are an organization's; the organization's roles list them all.
       parameters:
         - name: scope
           in: query
@@ -192,7 +193,16 @@ paths:
             enum: [organization]
       responses:
         "200":
-          description: The roles.
+          description: The built-in roles, with the route's end announced.
+          headers:
+            Deprecation:
+              description: When the route was deprecated, as RFC 9745 says.
+              schema:
+                type: string
+            Sunset:
+              description: When the route goes, as RFC 8594 says.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -203,6 +213,34 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/Role"
+        "401":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /permissions:
+    get:
+      operationId: listPermissions
+      summary: The permissions a role granted at a scope may hold, from the catalog.
+      parameters:
+        - name: scope
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [organization]
+      responses:
+        "200":
+          description: The permissions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [permissions]
+                properties:
+                  permissions:
+                    type: array
+                    items:
+                      type: string
         "401":
           $ref: "#/components/responses/Problem"
         default:
@@ -338,15 +376,170 @@ paths:
       summary: Removes a member, with every role they hold; takes org.members.manage and every permission of those roles.
       parameters:
         - $ref: "#/components/parameters/org"
-        - name: user
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: "#/components/parameters/user"
       responses:
         "204":
           description: Removed.
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /orgs/{org}/members/{user}/roles:
+    post:
+      operationId: grantRole
+      summary: Gives a member a role; takes org.grants.manage and every permission of the role.
+      parameters:
+        - $ref: "#/components/parameters/org"
+        - $ref: "#/components/parameters/user"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleId]
+              properties:
+                roleId:
+                  type: string
+                  format: uuid
+      responses:
+        "204":
+          description: Granted.
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /orgs/{org}/members/{user}/roles/{role}:
+    delete:
+      operationId: revokeRole
+      summary: Takes a role from a member; takes org.grants.manage and every permission of the role. The last Owner keeps Owner.
+      parameters:
+        - $ref: "#/components/parameters/org"
+        - $ref: "#/components/parameters/user"
+        - $ref: "#/components/parameters/role"
+      responses:
+        "204":
+          description: Revoked.
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /orgs/{org}/roles:
+    get:
+      operationId: listRoles
+      summary: The roles the organization grants, the built-in ones first, then its own; takes org.read.
+      parameters:
+        - $ref: "#/components/parameters/org"
+      responses:
+        "200":
+          description: The roles.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [roles]
+                properties:
+                  roles:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Role"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    post:
+      operationId: createRole
+      summary: Defines a custom role; takes org.grants.manage and every permission it lists.
+      parameters:
+        - $ref: "#/components/parameters/org"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleInput"
+      responses:
+        "201":
+          description: The role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+  /orgs/{org}/roles/{role}:
+    patch:
+      operationId: updateRole
+      summary: Redefines a custom role, and with it every grant of it; takes org.grants.manage and every permission it listed or lists.
+      parameters:
+        - $ref: "#/components/parameters/org"
+        - $ref: "#/components/parameters/role"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleChanges"
+      responses:
+        "200":
+          description: The role.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "400":
+          $ref: "#/components/responses/Problem"
+        "401":
+          $ref: "#/components/responses/Problem"
+        "403":
+          $ref: "#/components/responses/Problem"
+        "404":
+          $ref: "#/components/responses/Problem"
+        "409":
+          $ref: "#/components/responses/Problem"
+        default:
+          $ref: "#/components/responses/Problem"
+    delete:
+      operationId: deleteRole
+      summary: Deletes a custom role nobody holds, cancelling the invitations that offered it; takes org.grants.manage and every permission of the role.
+      parameters:
+        - $ref: "#/components/parameters/org"
+        - $ref: "#/components/parameters/role"
+      responses:
+        "204":
+          description: Deleted.
         "401":
           $ref: "#/components/responses/Problem"
         "403":
@@ -558,6 +751,23 @@ components:
       description: The organization's slug, or an old slug of its.
       schema:
         type: string
+    user:
+      name: user
+      in: path
+      required: true
+      description: A member's user ID.
+      x-go-name: UserID
+      schema:
+        type: string
+        format: uuid
+    role:
+      name: role
+      in: path
+      required: true
+      x-go-name: RoleID
+      schema:
+        type: string
+        format: uuid
     id:
       name: id
       in: path
@@ -686,6 +896,7 @@ components:
             type: string
     Role:
       type: object
+      description: A role granted at the organization, built in or its own.
       required: [id, name, description, permissions, builtIn]
       properties:
         id:
@@ -701,6 +912,36 @@ components:
             type: string
         builtIn:
           type: boolean
+        orgId:
+          type: string
+          format: uuid
+          description: The organization a custom role belongs to; absent on a built-in role.
+    RoleInput:
+      type: object
+      description: A custom role's definition.
+      required: [name, permissions]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        permissions:
+          type: array
+          description: From the permissions listed at scope organization; at least one.
+          items:
+            type: string
+    RoleChanges:
+      type: object
+      description: What changes about a custom role; a field left out keeps its value.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        permissions:
+          type: array
+          items:
+            type: string
     Member:
       type: object
       description: A user who belongs to the organization, with the roles they hold there.
@@ -721,7 +962,7 @@ components:
     Invitation:
       type: object
       description: An invitation to an email, which only a user holding it, verified, accepts.
-      required: [id, orgId, orgSlug, orgName, email, roleId, createdAt, expiresAt]
+      required: [id, orgId, orgSlug, orgName, email, roleId, roleName, createdAt, expiresAt]
       properties:
         id:
           type: string
@@ -738,6 +979,9 @@ components:
         roleId:
           type: string
           format: uuid
+        roleName:
+          type: string
+          description: The role's name; empty once a custom role it offered is gone.
         createdAt:
           type: string
           format: date-time

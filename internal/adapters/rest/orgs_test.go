@@ -163,13 +163,6 @@ func TestOrganizations(t *testing.T) {
 				}
 			}},
 		{name: "update as a Member", viewer: maxim, method: "PATCH", path: fixed("/v1/orgs/acme"), body: `{"name":"Mine"}`, wantStatus: 403, wantCode: "auth.forbidden"},
-		{name: "roles", viewer: maxim, method: "GET", path: fixed("/v1/roles?scope=organization"), wantStatus: 200,
-			check: func(t *testing.T, _ *orgFixture, body []byte) {
-				if got := decode[struct{ Roles []Role }](t, body); len(got.Roles) != 4 || got.Roles[0].Name != "Owner" {
-					t.Errorf("roles = %s", body)
-				}
-			}},
-		{name: "roles at another scope", viewer: maxim, method: "GET", path: fixed("/v1/roles?scope=repository"), wantStatus: 400, wantCode: "request.invalid"},
 	})
 }
 

@@ -38,6 +38,7 @@ var conflicts = map[string]error{
 	"invitations_pending":     orgs.ErrInvited,
 	"join_requests_pending":   orgs.ErrRequested,
 	"memberships_pkey":        orgs.ErrAlreadyMember,
+	"roles_name":              orgs.ErrRoleNameTaken,
 }
 
 // transact runs fn in a transaction that acts for actor (transact), mapping a conflict to the domain's error.
@@ -98,8 +99,12 @@ func (s *OrgStore) Create(ctx context.Context, actor uuid.UUID, org orgs.Organiz
 	})
 }
 
-// join makes userID a member of orgID holding roleID, and records it: how says what made them one.
+// join makes userID a member of orgID holding roleID, and records it: how says what made them one. It holds the
+// organization's lock, as every grant does, so a role being deleted can't be granted meanwhile.
 func join(ctx context.Context, q *queries.Queries, orgID, actor, userID, roleID uuid.UUID, at time.Time, how string) error {
+	if _, err := q.LockOrganization(ctx, orgID); err != nil {
+		return wrapOrg("locking the organization", err)
+	}
 	if err := q.InsertMembership(ctx, orgID, userID, at); err != nil {
 		return fmt.Errorf("inserting the membership: %w", err)
 	}
@@ -186,7 +191,11 @@ func (s *OrgStore) OrganizationsOf(ctx context.Context, userID uuid.UUID) ([]org
 
 // role is the domain's view of a roles row.
 func role(r queries.Role) orgs.Role {
-	return orgs.Role{ID: r.ID, Name: r.Name, Description: r.Description, Permissions: r.Permissions, BuiltIn: r.BuiltIn}
+	out := orgs.Role{ID: r.ID, Name: r.Name, Description: r.Description, Permissions: r.Permissions, BuiltIn: r.BuiltIn}
+	if r.OrgID != nil {
+		out.OrgID = *r.OrgID
+	}
+	return out
 }
 
 // rolesHeld lists the roles each principal holds at the organization.
@@ -292,15 +301,22 @@ func notLastOwner(ctx context.Context, q *queries.Queries, orgID, userID uuid.UU
 	return nil
 }
 
-// invitation is the domain's view of an invitations row with its organization's slug and name.
-func invitation(i queries.Invitation, slug, name string) orgs.Invitation {
-	return orgs.Invitation{ID: i.ID, OrgID: i.OrgID, OrgSlug: slug, OrgName: name, Email: i.Email, RoleID: i.RoleID,
+// invitation is the domain's view of an invitations row with its organization's slug and name and its role's name.
+func invitation(i queries.Invitation, slug, name, roleName string) orgs.Invitation {
+	return orgs.Invitation{ID: i.ID, OrgID: i.OrgID, OrgSlug: slug, OrgName: name, Email: i.Email, RoleID: i.RoleID, RoleName: roleName,
 		InvitedBy: i.InvitedBy, State: orgs.State(i.State), CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt}
 }
 
-// Invite records the invitation.
+// Invite records the invitation. It holds the organization's lock and reads the role under it, as every grant does,
+// so a role being deleted isn't offered meanwhile.
 func (s *OrgStore) Invite(ctx context.Context, actor uuid.UUID, inv orgs.Invitation) error {
 	return s.transact(ctx, "recording the invitation", actor, func(ctx context.Context, q *queries.Queries) error {
+		if _, err := q.LockOrganization(ctx, inv.OrgID); err != nil {
+			return wrapOrg("locking the organization", err)
+		}
+		if _, err := q.Role(ctx, inv.RoleID); err != nil {
+			return wrapOrg("reading the role", err)
+		}
 		if _, err := q.DeleteExpiredInvitationTo(ctx, inv.OrgID, inv.Email, inv.CreatedAt); err != nil {
 			return fmt.Errorf("dropping an expired invitation: %w", err)
 		}
@@ -320,7 +336,7 @@ func (s *OrgStore) Invitation(ctx context.Context, id uuid.UUID) (orgs.Invitatio
 	if err != nil {
 		return orgs.Invitation{}, wrapOrg("reading the invitation", err)
 	}
-	return invitation(row.Invitation, row.Slug, row.Name), nil
+	return invitation(row.Invitation, row.Slug, row.Name, row.RoleName), nil
 }
 
 // Invitations lists the organization's pending invitations at now, oldest first.
@@ -331,7 +347,7 @@ func (s *OrgStore) Invitations(ctx context.Context, orgID uuid.UUID, now time.Ti
 	}
 	out := make([]orgs.Invitation, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, invitation(r.Invitation, r.Slug, r.Name))
+		out = append(out, invitation(r.Invitation, r.Slug, r.Name, r.RoleName))
 	}
 	return out, nil
 }
@@ -344,7 +360,7 @@ func (s *OrgStore) InvitationsFor(ctx context.Context, emails []string, now time
 	}
 	out := make([]orgs.Invitation, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, invitation(r.Invitation, r.Slug, r.Name))
+		out = append(out, invitation(r.Invitation, r.Slug, r.Name, r.RoleName))
 	}
 	return out, nil
 }
@@ -361,9 +377,13 @@ func closeInvitation(ctx context.Context, q *queries.Queries, actor uuid.UUID, i
 	return orgEvent(ctx, q, &inv.OrgID, actor, "invitation."+string(state), inv.ID, map[string]any{"email": inv.Email})
 }
 
-// Accept makes the invitee a member with the invitation's role, closes the invitation, and records both.
+// Accept makes the invitee a member with the invitation's role, closes the invitation, and records both. It takes
+// the organization's lock before touching the invitation, the order DeleteRole uses, so the two can't deadlock.
 func (s *OrgStore) Accept(ctx context.Context, actor uuid.UUID, inv orgs.Invitation, userID uuid.UUID, at time.Time) error {
 	return s.transact(ctx, "accepting the invitation", actor, func(ctx context.Context, q *queries.Queries) error {
+		if _, err := q.LockOrganization(ctx, inv.OrgID); err != nil {
+			return wrapOrg("locking the organization", err)
+		}
 		if err := closeInvitation(ctx, q, actor, inv, orgs.StateAccepted, at); err != nil {
 			return err
 		}
@@ -480,9 +500,10 @@ func (s *OrgStore) Role(ctx context.Context, id uuid.UUID) (orgs.Role, error) {
 	return role(r), nil
 }
 
-// Roles lists the roles granted at organizations, the built-in ones first.
-func (s *OrgStore) Roles(ctx context.Context) ([]orgs.Role, error) {
-	rows, err := s.q.RolesAt(ctx, string(auth.ScopeOrganization))
+// Roles lists the roles granted at the organization: the built-in organization roles first, then its own; for
+// uuid.Nil, the built-in ones alone.
+func (s *OrgStore) Roles(ctx context.Context, orgID uuid.UUID) ([]orgs.Role, error) {
+	rows, err := s.q.OrganizationRoles(ctx, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing the roles: %w", err)
 	}
@@ -493,13 +514,109 @@ func (s *OrgStore) Roles(ctx context.Context) ([]orgs.Role, error) {
 	return out, nil
 }
 
-// CountRoleHolders counts the principals holding roleID at the organization.
-func (s *OrgStore) CountRoleHolders(ctx context.Context, orgID, roleID uuid.UUID) (int, error) {
-	n, err := s.q.CountRoleHolders(ctx, roleID, orgID)
-	if err != nil {
-		return 0, fmt.Errorf("counting the role's holders: %w", err)
-	}
-	return int(n), nil
+// CreateRole records a custom role of its organization.
+func (s *OrgStore) CreateRole(ctx context.Context, actor uuid.UUID, r orgs.Role) error {
+	return s.transact(ctx, "creating the role", actor, func(ctx context.Context, q *queries.Queries) error {
+		if err := q.InsertRole(ctx, queries.InsertRoleParams{ID: r.ID, Name: r.Name, Description: r.Description, Permissions: r.Permissions, OrgID: &r.OrgID}); err != nil {
+			return fmt.Errorf("inserting the role: %w", err)
+		}
+		return orgEvent(ctx, q, &r.OrgID, actor, "role.created", r.ID, map[string]any{"name": r.Name, "permissions": r.Permissions})
+	})
+}
+
+// UpdateRole rewrites one of its organization's own roles; a built-in or another organization's is not found.
+func (s *OrgStore) UpdateRole(ctx context.Context, actor uuid.UUID, r orgs.Role) error {
+	return s.transact(ctx, "updating the role", actor, func(ctx context.Context, q *queries.Queries) error {
+		updated, err := q.UpdateRole(ctx, queries.UpdateRoleParams{ID: r.ID, OrgID: r.OrgID, Name: r.Name, Description: r.Description, Permissions: r.Permissions})
+		if err != nil {
+			return fmt.Errorf("updating the role: %w", err)
+		}
+		if updated == 0 {
+			return orgs.ErrNotFound
+		}
+		return orgEvent(ctx, q, &r.OrgID, actor, "role.updated", r.ID, map[string]any{"name": r.Name, "permissions": r.Permissions})
+	})
+}
+
+// DeleteRole deletes one of the organization's own roles that nobody holds, cancelling the invitations that offered
+// it. The organization's row is locked first, and every grant takes that lock too, so no grant of the role lands
+// between the check and the deletion.
+func (s *OrgStore) DeleteRole(ctx context.Context, actor uuid.UUID, orgID, roleID uuid.UUID, at time.Time) error {
+	return s.transact(ctx, "deleting the role", actor, func(ctx context.Context, q *queries.Queries) error {
+		if _, err := q.LockOrganization(ctx, orgID); err != nil {
+			return wrapOrg("locking the organization", err)
+		}
+		inUse, err := q.RoleInUse(ctx, roleID)
+		if err != nil {
+			return fmt.Errorf("checking the role's grants: %w", err)
+		}
+		if inUse {
+			return orgs.ErrRoleInUse
+		}
+		deleted, err := q.DeleteRole(ctx, roleID, orgID)
+		if err != nil {
+			return fmt.Errorf("deleting the role: %w", err)
+		}
+		if deleted == 0 {
+			return orgs.ErrNotFound
+		}
+		cancelled, err := q.CancelInvitationsOfRole(ctx, queries.CancelInvitationsOfRoleParams{OrgID: orgID, RoleID: roleID, DecidedAt: &at, DecidedBy: &actor})
+		if err != nil {
+			return fmt.Errorf("cancelling the role's invitations: %w", err)
+		}
+		for _, inv := range cancelled {
+			if err := orgEvent(ctx, q, &orgID, actor, "invitation.cancelled", inv.ID, map[string]any{"email": inv.Email, "role": roleID}); err != nil {
+				return err
+			}
+		}
+		return orgEvent(ctx, q, &orgID, actor, "role.deleted", roleID, map[string]any{"invitationsCancelled": len(cancelled)})
+	})
+}
+
+// GrantRole gives the member the role at the organization. It holds the organization's lock, so the role can't be
+// deleted meanwhile: one deleted first is not found.
+func (s *OrgStore) GrantRole(ctx context.Context, actor uuid.UUID, orgID, userID, roleID uuid.UUID) error {
+	return s.transact(ctx, "granting the role", actor, func(ctx context.Context, q *queries.Queries) error {
+		if _, err := q.LockOrganization(ctx, orgID); err != nil {
+			return wrapOrg("locking the organization", err)
+		}
+		if _, err := q.Role(ctx, roleID); err != nil {
+			return wrapOrg("reading the role", err)
+		}
+		granted, err := q.InsertGrant(ctx, queries.InsertGrantParams{
+			PrincipalID: userID, RoleID: roleID, Scope: string(auth.ScopeOrganization), ScopeID: &orgID, Source: string(auth.SourceGrant),
+		})
+		if err != nil {
+			return fmt.Errorf("inserting the grant: %w", err)
+		}
+		if granted == 0 {
+			return orgs.ErrGranted
+		}
+		return orgEvent(ctx, q, &orgID, actor, "role.granted", userID, map[string]any{"role": roleID})
+	})
+}
+
+// RevokeRole takes the role from the member at the organization. The organization's row is locked first, so the Owner
+// role can't be taken from two Owners at once and leave none.
+func (s *OrgStore) RevokeRole(ctx context.Context, actor uuid.UUID, orgID, userID, roleID uuid.UUID) error {
+	return s.transact(ctx, "revoking the role", actor, func(ctx context.Context, q *queries.Queries) error {
+		if _, err := q.LockOrganization(ctx, orgID); err != nil {
+			return wrapOrg("locking the organization", err)
+		}
+		if roleID == auth.RoleOwner {
+			if err := notLastOwner(ctx, q, orgID, userID); err != nil {
+				return err
+			}
+		}
+		revoked, err := q.DeleteOrganizationGrant(ctx, userID, roleID, orgID)
+		if err != nil {
+			return fmt.Errorf("deleting the grant: %w", err)
+		}
+		if revoked == 0 {
+			return orgs.ErrNotFound
+		}
+		return orgEvent(ctx, q, &orgID, actor, "role.revoked", userID, map[string]any{"role": roleID})
+	})
 }
 
 // DeleteExpired deletes the invitations and join requests that expired before now.

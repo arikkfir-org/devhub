@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"cobranch.dev/internal/services/auth"
 )
 
 // Lifetimes, the principals design's defaults.
@@ -47,13 +49,51 @@ type Settings struct {
 	Providers           []string
 }
 
-// Role is a role granted at an organization: a built-in one today, custom ones with their slice.
+// Role is a role granted at an organization: one of the built-in ones, or a custom role the organization defined.
 type Role struct {
 	ID          uuid.UUID
 	Name        string
 	Description string
 	Permissions []string
 	BuiltIn     bool
+	// OrgID is the organization a custom role belongs to; uuid.Nil for a built-in role, which every organization grants.
+	OrgID uuid.UUID
+}
+
+// RoleInput is what defines a custom role: a name, a description, and the permissions it holds, from
+// RolePermissions.
+type RoleInput struct {
+	Name        string
+	Description string
+	Permissions []string
+}
+
+// RolePermissions lists the permissions a role granted at an organization may hold: the catalog's organization and
+// repository permissions, as the built-in Owner holds both.
+func RolePermissions() []string {
+	return slices.Concat(auth.OrganizationPermissions, auth.RepositoryPermissions)
+}
+
+// ValidateRole checks a custom role's definition and returns it normalized: the name and description trimmed, the
+// permissions sorted and deduplicated.
+func ValidateRole(in RoleInput) (RoleInput, error) {
+	in.Name, in.Description = strings.TrimSpace(in.Name), strings.TrimSpace(in.Description)
+	switch {
+	case in.Name == "" || len(in.Name) > 50:
+		return in, &ValidationError{Field: "name", Code: "role.name_invalid", Message: "a role's name is 1 to 50 characters"}
+	case len(in.Description) > 500:
+		return in, &ValidationError{Field: "description", Code: "role.description_invalid", Message: "a role's description is at most 500 characters"}
+	case len(in.Permissions) == 0:
+		return in, &ValidationError{Field: "permissions", Code: "role.permissions_invalid", Message: "a role holds at least one permission"}
+	}
+	allowed := RolePermissions()
+	for _, p := range in.Permissions {
+		if !slices.Contains(allowed, p) {
+			return in, &ValidationError{Field: "permissions", Code: "role.permissions_invalid", Message: p + " is not a permission a role holds at an organization"}
+		}
+	}
+	in.Permissions = slices.Compact(slices.Sorted(slices.Values(in.Permissions)))
+	return in, nil
 }
 
 // Member is a user who belongs to an organization, with the roles they hold there.
@@ -85,10 +125,12 @@ type Invitation struct {
 	OrgSlug, OrgName string
 	Email            string
 	RoleID           uuid.UUID
-	InvitedBy        uuid.UUID
-	State            State
-	CreatedAt        time.Time
-	ExpiresAt        time.Time
+	// RoleName names the role, for whoever reads the invitation; empty once a custom role is gone.
+	RoleName  string
+	InvitedBy uuid.UUID
+	State     State
+	CreatedAt time.Time
+	ExpiresAt time.Time
 }
 
 // JoinRequest is a user's request to join an organization, waiting for one of its member managers.
@@ -124,8 +166,16 @@ var (
 	ErrLastOwner = errors.New("the organization's last Owner can't leave")
 	// ErrInviterGone is an invitation whose inviter no longer may add members, so it adds nobody.
 	ErrInviterGone = errors.New("whoever invited you may no longer add members")
-	// ErrNotOrganizationRole is a role that isn't granted at organizations.
-	ErrNotOrganizationRole = errors.New("not an organization role")
+	// ErrNotOrganizationRole is a role that isn't granted at the organization: not built in, and not its own.
+	ErrNotOrganizationRole = errors.New("not a role of this organization")
+	// ErrRoleNameTaken is a name another role granted at the organization has.
+	ErrRoleNameTaken = errors.New("another role here has this name")
+	// ErrBuiltInRole is a built-in role, which nobody changes or deletes.
+	ErrBuiltInRole = errors.New("a built-in role can't be changed")
+	// ErrRoleInUse is a custom role somebody still holds, or that the organization gives everyone who joins.
+	ErrRoleInUse = errors.New("the role is still granted, or is the membership role")
+	// ErrGranted is a role the member already holds.
+	ErrGranted = errors.New("the member already holds this role")
 )
 
 // ValidationError is input the domain refuses: Field names what, Code why, in the API's terms.

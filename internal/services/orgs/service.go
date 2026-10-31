@@ -62,8 +62,22 @@ type Store interface {
 	CloseJoinRequest(ctx context.Context, actor uuid.UUID, id uuid.UUID, state State, at time.Time) error
 	// Role finds a role, or ErrNotFound.
 	Role(ctx context.Context, id uuid.UUID) (Role, error)
-	// Roles lists the roles granted at organizations, the built-in ones first.
-	Roles(ctx context.Context) ([]Role, error)
+	// Roles lists the roles granted at the organization: the built-in organization roles first, then its own;
+	// uuid.Nil lists the built-in ones alone.
+	Roles(ctx context.Context, orgID uuid.UUID) ([]Role, error)
+	// CreateRole records a custom role of role.OrgID, or ErrRoleNameTaken.
+	CreateRole(ctx context.Context, actor uuid.UUID, role Role) error
+	// UpdateRole rewrites one of role.OrgID's own roles: ErrNotFound for a built-in or another organization's,
+	// ErrRoleNameTaken for a name another role there has.
+	UpdateRole(ctx context.Context, actor uuid.UUID, role Role) error
+	// DeleteRole deletes one of the organization's own roles and cancels the invitations that offered it, at `at`:
+	// ErrRoleInUse while somebody holds it or an organization gives it to everyone who joins.
+	DeleteRole(ctx context.Context, actor uuid.UUID, orgID, roleID uuid.UUID, at time.Time) error
+	// GrantRole gives the member the role at the organization, or ErrGranted when they hold it.
+	GrantRole(ctx context.Context, actor uuid.UUID, orgID, userID, roleID uuid.UUID) error
+	// RevokeRole takes the role from the member at the organization: ErrNotFound when they don't hold it, and
+	// ErrLastOwner for the Owner role of the organization's one Owner, decided under a lock.
+	RevokeRole(ctx context.Context, actor uuid.UUID, orgID, userID, roleID uuid.UUID) error
 	// DeleteExpired deletes the invitations and join requests that expired before now, and returns how many of each.
 	DeleteExpired(ctx context.Context, now time.Time) (invitations, requests int64, err error)
 }
@@ -203,7 +217,7 @@ func (s *Service) Update(ctx context.Context, v Viewer, orgID uuid.UUID, setting
 	if err := errors.Join(ValidateSlug(settings.Slug), ValidateName(settings.Name)); err != nil {
 		return Organization{}, err
 	}
-	if _, err := s.organizationRole(ctx, settings.MembershipRoleID); err != nil {
+	if _, err := s.organizationRole(ctx, orgID, settings.MembershipRoleID); err != nil {
 		return Organization{}, err
 	}
 	org.Slug, org.Name, org.MembershipRoleID = settings.Slug, settings.Name, settings.MembershipRoleID
@@ -217,9 +231,9 @@ func (s *Service) Update(ctx context.Context, v Viewer, orgID uuid.UUID, setting
 	return org, nil
 }
 
-// organizationRole finds roleID among the roles granted at organizations.
-func (s *Service) organizationRole(ctx context.Context, roleID uuid.UUID) (Role, error) {
-	roles, err := s.store.Roles(ctx)
+// organizationRole finds roleID among the roles granted at the organization.
+func (s *Service) organizationRole(ctx context.Context, orgID, roleID uuid.UUID) (Role, error) {
+	roles, err := s.store.Roles(ctx, orgID)
 	if err != nil {
 		return Role{}, fmt.Errorf("listing the roles: %w", err)
 	}
@@ -231,13 +245,189 @@ func (s *Service) organizationRole(ctx context.Context, roleID uuid.UUID) (Role,
 	return Role{}, &ValidationError{Field: "roleId", Code: "role.invalid", Message: ErrNotOrganizationRole.Error()}
 }
 
-// Roles lists the roles an organization grants, for a signed-in viewer.
-func (s *Service) Roles(ctx context.Context) ([]Role, error) {
-	roles, err := s.store.Roles(ctx)
+// Roles lists the roles the organization grants, the built-in ones first; it takes org.read.
+func (s *Service) Roles(ctx context.Context, v Viewer, orgID uuid.UUID) ([]Role, error) {
+	if _, _, err := s.require(ctx, v, orgID, PermRead); err != nil {
+		return nil, err
+	}
+	roles, err := s.store.Roles(ctx, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("listing the roles: %w", err)
 	}
 	return roles, nil
+}
+
+// BuiltInRoles lists the built-in organization roles, for any signed-in viewer: what GET /v1/roles answered before
+// roles became an organization's, kept while that route is deprecated.
+func (s *Service) BuiltInRoles(ctx context.Context) ([]Role, error) {
+	roles, err := s.store.Roles(ctx, uuid.Nil)
+	if err != nil {
+		return nil, fmt.Errorf("listing the built-in roles: %w", err)
+	}
+	return roles, nil
+}
+
+// covers applies the grant rules to permissions: the viewer, who holds held, grants or revokes nothing they lack.
+func covers(held, permissions []string, what string) error {
+	if !auth.Covers(held, permissions) {
+		return fmt.Errorf("%w: %s takes every permission involved", auth.ErrForbidden, what)
+	}
+	return nil
+}
+
+// nameFree refuses a role's name another role granted at the organization has, in any case, but the role itself.
+func (s *Service) nameFree(ctx context.Context, orgID, self uuid.UUID, name string) error {
+	roles, err := s.store.Roles(ctx, orgID)
+	if err != nil {
+		return fmt.Errorf("listing the roles: %w", err)
+	}
+	for _, r := range roles {
+		if r.ID != self && strings.EqualFold(r.Name, name) {
+			return ErrRoleNameTaken
+		}
+	}
+	return nil
+}
+
+// CreateRole defines a custom role of the organization; it takes org.grants.manage and every permission the role
+// lists.
+func (s *Service) CreateRole(ctx context.Context, v Viewer, orgID uuid.UUID, in RoleInput) (Role, error) {
+	_, held, err := s.require(ctx, v, orgID, PermGrantsManage)
+	if err != nil {
+		return Role{}, err
+	}
+	in, err = ValidateRole(in)
+	if err != nil {
+		return Role{}, err
+	}
+	if err := covers(held, in.Permissions, "defining a role"); err != nil {
+		return Role{}, err
+	}
+	if err := s.nameFree(ctx, orgID, uuid.Nil, in.Name); err != nil {
+		return Role{}, err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		return Role{}, fmt.Errorf("making an ID: %w", err)
+	}
+	role := Role{ID: id, Name: in.Name, Description: in.Description, Permissions: in.Permissions, OrgID: orgID}
+	if err := s.store.CreateRole(ctx, v.ID, role); err != nil {
+		return Role{}, wrap("creating the role", err)
+	}
+	return role, nil
+}
+
+// customRole finds roleID among the organization's own roles: ErrNotFound for one it hasn't, ErrBuiltInRole for a
+// built-in one.
+func (s *Service) customRole(ctx context.Context, orgID, roleID uuid.UUID) (Role, error) {
+	role, err := s.organizationRole(ctx, orgID, roleID)
+	if err != nil {
+		return Role{}, ErrNotFound
+	}
+	if role.BuiltIn {
+		return Role{}, ErrBuiltInRole
+	}
+	return role, nil
+}
+
+// UpdateRole redefines one of the organization's own roles, and with it every grant of it; it takes
+// org.grants.manage and every permission the role listed or lists.
+func (s *Service) UpdateRole(ctx context.Context, v Viewer, orgID, roleID uuid.UUID, in RoleInput) (Role, error) {
+	_, held, err := s.require(ctx, v, orgID, PermGrantsManage)
+	if err != nil {
+		return Role{}, err
+	}
+	role, err := s.customRole(ctx, orgID, roleID)
+	if err != nil {
+		return Role{}, err
+	}
+	in, err = ValidateRole(in)
+	if err != nil {
+		return Role{}, err
+	}
+	if err := covers(held, slices.Concat(role.Permissions, in.Permissions), "changing a role"); err != nil {
+		return Role{}, err
+	}
+	if err := s.nameFree(ctx, orgID, roleID, in.Name); err != nil {
+		return Role{}, err
+	}
+	role.Name, role.Description, role.Permissions = in.Name, in.Description, in.Permissions
+	if err := s.store.UpdateRole(ctx, v.ID, role); err != nil {
+		return Role{}, wrap("updating the role", err)
+	}
+	return role, nil
+}
+
+// DeleteRole deletes one of the organization's own roles that nobody holds; it takes org.grants.manage and every
+// permission of the role. The membership role stays until the settings name another.
+func (s *Service) DeleteRole(ctx context.Context, v Viewer, orgID, roleID uuid.UUID) error {
+	org, held, err := s.require(ctx, v, orgID, PermGrantsManage)
+	if err != nil {
+		return err
+	}
+	role, err := s.customRole(ctx, orgID, roleID)
+	if err != nil {
+		return err
+	}
+	if err := covers(held, role.Permissions, "deleting a role"); err != nil {
+		return err
+	}
+	if org.MembershipRoleID == roleID {
+		return ErrRoleInUse
+	}
+	return wrap("deleting the role", s.store.DeleteRole(ctx, v.ID, orgID, roleID, s.now()))
+}
+
+// grantable finds the role and the member a grant or a revocation names, for a viewer with org.grants.manage who
+// holds every permission of the role.
+func (s *Service) grantable(ctx context.Context, v Viewer, orgID, userID, roleID uuid.UUID, what string) (Member, Role, error) {
+	_, held, err := s.require(ctx, v, orgID, PermGrantsManage)
+	if err != nil {
+		return Member{}, Role{}, err
+	}
+	role, err := s.organizationRole(ctx, orgID, roleID)
+	if err != nil {
+		return Member{}, Role{}, err
+	}
+	if err := covers(held, role.Permissions, what); err != nil {
+		return Member{}, Role{}, err
+	}
+	member, err := s.store.Member(ctx, orgID, userID)
+	if err != nil {
+		return Member{}, Role{}, wrap("finding the member", err)
+	}
+	return member, role, nil
+}
+
+// holdsRole says whether the member holds roleID.
+func holdsRole(m Member, roleID uuid.UUID) bool {
+	return slices.ContainsFunc(m.Roles, func(r Role) bool { return r.ID == roleID })
+}
+
+// GrantRole gives a member a role at the organization; it takes org.grants.manage and every permission of the
+// role.
+func (s *Service) GrantRole(ctx context.Context, v Viewer, orgID, userID, roleID uuid.UUID) error {
+	member, role, err := s.grantable(ctx, v, orgID, userID, roleID, "granting "+roleID.String())
+	if err != nil {
+		return err
+	}
+	if holdsRole(member, role.ID) {
+		return ErrGranted
+	}
+	return wrap("granting the role", s.store.GrantRole(ctx, v.ID, orgID, userID, role.ID))
+}
+
+// RevokeRole takes a role from a member at the organization; it takes org.grants.manage and every permission of
+// the role. The Owner role stays with the organization's last Owner.
+func (s *Service) RevokeRole(ctx context.Context, v Viewer, orgID, userID, roleID uuid.UUID) error {
+	member, role, err := s.grantable(ctx, v, orgID, userID, roleID, "revoking "+roleID.String())
+	if err != nil {
+		return err
+	}
+	if !holdsRole(member, role.ID) {
+		return ErrNotFound
+	}
+	return wrap("revoking the role", s.store.RevokeRole(ctx, v.ID, orgID, userID, role.ID))
 }
 
 // Members lists the organization's members with their roles; it takes org.read.
@@ -278,7 +468,7 @@ func (s *Service) Invite(ctx context.Context, v Viewer, orgID uuid.UUID, email s
 	if roleID == uuid.Nil {
 		roleID = org.MembershipRoleID
 	}
-	role, err := s.organizationRole(ctx, roleID)
+	role, err := s.organizationRole(ctx, orgID, roleID)
 	if err != nil {
 		return Invitation{}, err
 	}
@@ -295,7 +485,7 @@ func (s *Service) Invite(ctx context.Context, v Viewer, orgID uuid.UUID, email s
 		return Invitation{}, fmt.Errorf("making an ID: %w", err)
 	}
 	now := s.now()
-	inv := Invitation{ID: id, OrgID: orgID, OrgSlug: org.Slug, OrgName: org.Name, Email: email, RoleID: role.ID, InvitedBy: v.ID,
+	inv := Invitation{ID: id, OrgID: orgID, OrgSlug: org.Slug, OrgName: org.Name, Email: email, RoleID: role.ID, RoleName: role.Name, InvitedBy: v.ID,
 		State: StatePending, CreatedAt: now, ExpiresAt: now.Add(InvitationLifetime)}
 	if err := s.store.Invite(ctx, v.ID, inv); err != nil {
 		return Invitation{}, wrap("recording the invitation", err)
@@ -484,7 +674,7 @@ func (s *Service) ApproveJoinRequest(ctx context.Context, v Viewer, orgID, id, r
 	if roleID == uuid.Nil {
 		roleID = org.MembershipRoleID
 	}
-	role, err := s.organizationRole(ctx, roleID)
+	role, err := s.organizationRole(ctx, orgID, roleID)
 	if err != nil {
 		return err
 	}
@@ -560,7 +750,8 @@ func wrap(what string, err error) error {
 	case err == nil:
 		return nil
 	case errors.Is(err, ErrNotFound), errors.Is(err, ErrSlugTaken), errors.Is(err, ErrInvited), errors.Is(err, ErrRequested),
-		errors.Is(err, ErrAlreadyMember):
+		errors.Is(err, ErrAlreadyMember), errors.Is(err, ErrLastOwner), errors.Is(err, ErrRoleNameTaken),
+		errors.Is(err, ErrRoleInUse), errors.Is(err, ErrGranted):
 		return err
 	}
 	return fmt.Errorf("%s: %w", what, err)

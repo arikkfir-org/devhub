@@ -77,6 +77,7 @@ type Role struct {
 	Description string
 	Permissions []string
 	BuiltIn     bool
+	OrgID       *uuid.UUID
 }
 
 type Session struct {

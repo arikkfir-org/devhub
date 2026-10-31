@@ -23,3 +23,7 @@ INSERT INTO memberships (org_id, user_id) VALUES ($1, $2);
 -- name: InsertSeedInvitation :exec
 INSERT INTO invitations (id, org_id, email, role_id, invited_by, expires_at)
 VALUES (@id, @org_id, @email, @role_id, @invited_by, @expires_at);
+
+-- name: InsertSeedRole :exec
+INSERT INTO roles (id, scope, name, description, permissions, built_in, org_id)
+VALUES (@id, 'organization', @name, @description, string_to_array(@permissions::text, ','), false, @org_id);

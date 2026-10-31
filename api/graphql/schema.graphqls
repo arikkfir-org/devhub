@@ -52,8 +52,10 @@ enum RoleScope {
 extend type Query {
   "An organization by its slug, current or former: null unless the viewer may read it."
   organization(slug: String!): Organization
-  "The roles granted at a scope, the built-in ones first."
-  roles(scope: RoleScope!): [Role!]!
+  "The permissions a role granted at a scope may hold, from the catalog."
+  permissions(scope: RoleScope!): [String!]!
+  "The built-in roles granted at a scope."
+  roles(scope: RoleScope!): [Role!]! @deprecated(reason: "Roles are an organization's: Organization.roles lists them all. Removed two minor releases after 0.2.")
 }
 
 extend type User {
@@ -90,6 +92,16 @@ extend type Mutation {
   leaveOrganization(id: ID!): Boolean!
   "Removes a member; takes org.members.manage and every permission of the roles they hold. Oneself is leaving."
   removeMember(organizationId: ID!, userId: ID!): Boolean!
+  "Gives a member a role; takes org.grants.manage and every permission of the role."
+  grantRole(organizationId: ID!, userId: ID!, roleId: ID!): Boolean!
+  "Takes a role from a member; takes org.grants.manage and every permission of the role. The last Owner keeps Owner."
+  revokeRole(organizationId: ID!, userId: ID!, roleId: ID!): Boolean!
+  "Defines a custom role; takes org.grants.manage and every permission it lists."
+  createRole(organizationId: ID!, input: RoleInput!): Role!
+  "Redefines a custom role, and with it every grant of it; takes org.grants.manage and every permission it listed or lists."
+  updateRole(organizationId: ID!, id: ID!, input: RoleInput!): Role!
+  "Deletes a custom role nobody holds, cancelling the invitations that offered it; takes org.grants.manage and every permission of the role."
+  deleteRole(organizationId: ID!, id: ID!): Boolean!
 }
 
 "An organization: a slug for its URLs, a name, and its settings."
@@ -112,6 +124,8 @@ type Organization {
   invitations: [Invitation!]!
   "The pending join requests; takes org.members.manage."
   joinRequests: [JoinRequest!]!
+  "The roles the organization grants: the built-in ones first, then its own; takes org.read."
+  roles: [Role!]!
 }
 
 input OrganizationSettings {
@@ -123,13 +137,23 @@ input OrganizationSettings {
   providers: [String!]
 }
 
-"A role granted at a scope."
+"A role granted at an organization: built in, or the organization's own."
 type Role {
   id: ID!
   name: String!
   description: String!
   permissions: [String!]!
   builtIn: Boolean!
+  "The organization a custom role belongs to; null on a built-in role."
+  organizationId: ID
+}
+
+"A custom role's definition."
+input RoleInput {
+  name: String!
+  description: String
+  "From the permissions listed at scope ORGANIZATION; at least one."
+  permissions: [String!]!
 }
 
 "A user who belongs to an organization, with the roles they hold there."
@@ -148,6 +172,8 @@ type Invitation {
   organizationName: String!
   email: String!
   roleId: ID!
+  "The role's name; empty once a custom role it offered is gone."
+  roleName: String!
   createdAt: Time!
   expiresAt: Time!
 }

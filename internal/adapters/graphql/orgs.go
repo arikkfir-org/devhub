@@ -21,7 +21,13 @@ type Organizations interface {
 	Get(ctx context.Context, v orgs.Viewer, slug string) (orgs.Organization, error)
 	ViewerPermissions(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]string, error)
 	Update(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, settings orgs.Settings) (orgs.Organization, error)
-	Roles(ctx context.Context) ([]orgs.Role, error)
+	Roles(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Role, error)
+	BuiltInRoles(ctx context.Context) ([]orgs.Role, error)
+	CreateRole(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, in orgs.RoleInput) (orgs.Role, error)
+	UpdateRole(ctx context.Context, v orgs.Viewer, orgID, roleID uuid.UUID, in orgs.RoleInput) (orgs.Role, error)
+	DeleteRole(ctx context.Context, v orgs.Viewer, orgID, roleID uuid.UUID) error
+	GrantRole(ctx context.Context, v orgs.Viewer, orgID, userID, roleID uuid.UUID) error
+	RevokeRole(ctx context.Context, v orgs.Viewer, orgID, userID, roleID uuid.UUID) error
 	Members(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Member, error)
 	Invite(ctx context.Context, v orgs.Viewer, orgID uuid.UUID, email string, roleID uuid.UUID) (orgs.Invitation, error)
 	Invitations(ctx context.Context, v orgs.Viewer, orgID uuid.UUID) ([]orgs.Invitation, error)
@@ -55,6 +61,10 @@ var conflicts = map[error]string{
 	orgs.ErrAlreadyMember: "member.exists",
 	orgs.ErrLastOwner:     "org.last_owner",
 	orgs.ErrInviterGone:   "invitation.inviter_gone",
+	orgs.ErrRoleNameTaken: "role.name_taken",
+	orgs.ErrRoleInUse:     "role.in_use",
+	orgs.ErrBuiltInRole:   "role.built_in",
+	orgs.ErrGranted:       "grant.exists",
 }
 
 // refuse is a field's error with a code and, when reason is set, a stable reason beside it.
@@ -105,7 +115,37 @@ func organization(o orgs.Organization) *Organization {
 }
 
 func role(r orgs.Role) *Role {
-	return &Role{ID: r.ID.String(), Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions), BuiltIn: r.BuiltIn}
+	out := &Role{ID: r.ID.String(), Name: r.Name, Description: r.Description, Permissions: nonNil(r.Permissions), BuiltIn: r.BuiltIn}
+	if r.OrgID != uuid.Nil {
+		id := r.OrgID.String()
+		out.OrganizationID = &id
+	}
+	return out
+}
+
+// roleInput is input as the domain takes it.
+func roleInput(input RoleInput) orgs.RoleInput {
+	in := orgs.RoleInput{Name: input.Name, Permissions: input.Permissions}
+	if input.Description != nil {
+		in.Description = *input.Description
+	}
+	return in
+}
+
+// changeGrant grants or revokes a role of a member, through change, and answers true when it did.
+func (r *mutationResolver) changeGrant(ctx context.Context, organizationID, userID, roleID string,
+	change func(ctx context.Context, v orgs.Viewer, orgID, userID, roleID uuid.UUID) error, what string) (bool, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return false, err
+	}
+	role, err := parseID(ctx, roleID, "role")
+	if err != nil {
+		return false, err
+	}
+	return act(ctx, organizationID, userID, "member", func(orgID, id uuid.UUID) error {
+		return change(ctx, v.User, orgID, id, role)
+	}, what)
 }
 
 func member(m orgs.Member) *Member {
@@ -114,7 +154,7 @@ func member(m orgs.Member) *Member {
 
 func invitation(i orgs.Invitation) *Invitation {
 	return &Invitation{ID: i.ID.String(), OrganizationID: i.OrgID.String(), OrganizationSlug: i.OrgSlug, OrganizationName: i.OrgName,
-		Email: i.Email, RoleID: i.RoleID.String(), CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt}
+		Email: i.Email, RoleID: i.RoleID.String(), RoleName: i.RoleName, CreatedAt: i.CreatedAt, ExpiresAt: i.ExpiresAt}
 }
 
 func joinRequest(r orgs.JoinRequest) *JoinRequest {

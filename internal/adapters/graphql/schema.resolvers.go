@@ -205,6 +205,65 @@ func (r *mutationResolver) RemoveMember(ctx context.Context, organizationID stri
 	}, "removing the member")
 }
 
+// GrantRole is the resolver for the grantRole field.
+func (r *mutationResolver) GrantRole(ctx context.Context, organizationID string, userID string, roleID string) (bool, error) {
+	return r.changeGrant(ctx, organizationID, userID, roleID, r.Orgs.GrantRole, "granting the role")
+}
+
+// RevokeRole is the resolver for the revokeRole field.
+func (r *mutationResolver) RevokeRole(ctx context.Context, organizationID string, userID string, roleID string) (bool, error) {
+	return r.changeGrant(ctx, organizationID, userID, roleID, r.Orgs.RevokeRole, "revoking the role")
+}
+
+// CreateRole is the resolver for the createRole field.
+func (r *mutationResolver) CreateRole(ctx context.Context, organizationID string, input RoleInput) (*Role, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgID, err := parseID(ctx, organizationID, "organization")
+	if err != nil {
+		return nil, err
+	}
+	created, err := r.Orgs.CreateRole(ctx, v.User, orgID, roleInput(input))
+	if err != nil {
+		return nil, fail(ctx, err, "role", "creating the role")
+	}
+	return role(created), nil
+}
+
+// UpdateRole is the resolver for the updateRole field.
+func (r *mutationResolver) UpdateRole(ctx context.Context, organizationID string, id string, input RoleInput) (*Role, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return nil, err
+	}
+	orgID, err := parseID(ctx, organizationID, "organization")
+	if err != nil {
+		return nil, err
+	}
+	roleID, err := parseID(ctx, id, "role")
+	if err != nil {
+		return nil, err
+	}
+	updated, err := r.Orgs.UpdateRole(ctx, v.User, orgID, roleID, roleInput(input))
+	if err != nil {
+		return nil, fail(ctx, err, "role", "updating the role")
+	}
+	return role(updated), nil
+}
+
+// DeleteRole is the resolver for the deleteRole field.
+func (r *mutationResolver) DeleteRole(ctx context.Context, organizationID string, id string) (bool, error) {
+	v, err := viewer(ctx)
+	if err != nil {
+		return false, err
+	}
+	return act(ctx, organizationID, id, "role", func(orgID, id uuid.UUID) error {
+		return r.Orgs.DeleteRole(ctx, v.User, orgID, id)
+	}, "deleting the role")
+}
+
 // ViewerPermissions is the resolver for the viewerPermissions field.
 func (r *organizationResolver) ViewerPermissions(ctx context.Context, obj *Organization) ([]string, error) {
 	return resolveOrg(ctx, obj, r.Orgs.ViewerPermissions, "reading the viewer's permissions")
@@ -237,6 +296,15 @@ func (r *organizationResolver) JoinRequests(ctx context.Context, obj *Organizati
 	return mapAll(all, joinRequest), nil
 }
 
+// Roles is the resolver for the roles field.
+func (r *organizationResolver) Roles(ctx context.Context, obj *Organization) ([]*Role, error) {
+	all, err := resolveOrg(ctx, obj, r.Orgs.Roles, "listing the roles")
+	if err != nil {
+		return nil, err
+	}
+	return mapAll(all, role), nil
+}
+
 // Version is the resolver for the version field.
 func (r *queryResolver) Version(ctx context.Context) (string, error) {
 	return r.Resolver.Version, nil
@@ -267,14 +335,22 @@ func (r *queryResolver) Organization(ctx context.Context, slug string) (*Organiz
 	return organization(org), nil
 }
 
+// Permissions is the resolver for the permissions field.
+func (r *queryResolver) Permissions(ctx context.Context, scope RoleScope) ([]string, error) {
+	if _, err := viewer(ctx); err != nil {
+		return nil, err
+	}
+	return orgs.RolePermissions(), nil
+}
+
 // Roles is the resolver for the roles field.
 func (r *queryResolver) Roles(ctx context.Context, scope RoleScope) ([]*Role, error) {
 	if _, err := viewer(ctx); err != nil {
 		return nil, err
 	}
-	roles, err := r.Orgs.Roles(ctx)
+	roles, err := r.Orgs.BuiltInRoles(ctx)
 	if err != nil {
-		return nil, fail(ctx, err, "role", "listing the roles")
+		return nil, fail(ctx, err, "role", "listing the built-in roles")
 	}
 	return mapAll(roles, role), nil
 }

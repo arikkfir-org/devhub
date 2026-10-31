@@ -125,7 +125,8 @@ func TestOrganizationQueries(t *testing.T) {
 		{name: "a member may not list invitations", viewer: maxim, document: fixed(`{ organization(slug: "acme") { invitations { email } } }`), wantCode: forbidden},
 		{name: "an Owner lists invitations", viewer: olivia, document: fixed(`{ organization(slug: "acme") { invitations { email roleId } joinRequests { id } } }`),
 			want: []string{`"email":"nia@example.com"`, `"joinRequests":[]`}},
-		{name: "roles", viewer: maxim, document: fixed(`{ roles(scope: ORGANIZATION) { name builtIn } }`), want: []string{`{"name":"Owner","builtIn":true}`, `{"name":"Manager","builtIn":false}`}},
+		{name: "roles and permissions", viewer: maxim, document: fixed(`{ permissions(scope: ORGANIZATION) organization(slug: "acme") { roles { name builtIn organizationId } } }`),
+			want: []string{`"permissions":["org.read","org.manage"`, `{"name":"Owner","builtIn":true,"organizationId":null}`, `{"name":"Manager","builtIn":false,"organizationId":null}`}},
 		{name: "anonymous", document: fixed(`{ organization(slug: "acme") { slug } }`), wantCode: unauthenticated},
 	})
 }

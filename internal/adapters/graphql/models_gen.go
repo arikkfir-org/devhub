@@ -17,14 +17,16 @@ type Email struct {
 
 // An invitation to an email; only a user who holds it, verified, accepts it.
 type Invitation struct {
-	ID               string    `json:"id"`
-	OrganizationID   string    `json:"organizationId"`
-	OrganizationSlug string    `json:"organizationSlug"`
-	OrganizationName string    `json:"organizationName"`
-	Email            string    `json:"email"`
-	RoleID           string    `json:"roleId"`
-	CreatedAt        time.Time `json:"createdAt"`
-	ExpiresAt        time.Time `json:"expiresAt"`
+	ID               string `json:"id"`
+	OrganizationID   string `json:"organizationId"`
+	OrganizationSlug string `json:"organizationSlug"`
+	OrganizationName string `json:"organizationName"`
+	Email            string `json:"email"`
+	RoleID           string `json:"roleId"`
+	// The role's name; empty once a custom role it offered is gone.
+	RoleName  string    `json:"roleName"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
 }
 
 // A user's request to join an organization, waiting for one of its member managers.
@@ -71,6 +73,8 @@ type Organization struct {
 	Invitations []*Invitation `json:"invitations"`
 	// The pending join requests; takes org.members.manage.
 	JoinRequests []*JoinRequest `json:"joinRequests"`
+	// The roles the organization grants: the built-in ones first, then its own; takes org.read.
+	Roles []*Role `json:"roles"`
 }
 
 type OrganizationSettings struct {
@@ -85,13 +89,23 @@ type OrganizationSettings struct {
 type Query struct {
 }
 
-// A role granted at a scope.
+// A role granted at an organization: built in, or the organization's own.
 type Role struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Permissions []string `json:"permissions"`
 	BuiltIn     bool     `json:"builtIn"`
+	// The organization a custom role belongs to; null on a built-in role.
+	OrganizationID *string `json:"organizationId,omitempty"`
+}
+
+// A custom role's definition.
+type RoleInput struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	// From the permissions listed at scope ORGANIZATION; at least one.
+	Permissions []string `json:"permissions"`
 }
 
 // A signed-in browser.

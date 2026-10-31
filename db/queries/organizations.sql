@@ -67,10 +67,6 @@ ORDER BY 1;
 -- name: Role :one
 SELECT * FROM roles WHERE id = $1;
 
--- RolesAt lists the roles granted at a scope, the built-in ones first.
--- name: RolesAt :many
-SELECT * FROM roles WHERE scope = $1 ORDER BY built_in DESC, name;
-
 -- ClaimSlug gives the organization the slug, or changes nothing when another organization has or had it: zero rows.
 -- name: ClaimSlug :execrows
 INSERT INTO organization_slugs (slug, org_id) VALUES ($1, $2)

@@ -390,9 +390,103 @@ func (s *Store) Role(_ context.Context, id uuid.UUID) (orgs.Role, error) {
 	return r, nil
 }
 
-// Roles lists the organization roles.
-func (s *Store) Roles(context.Context) ([]orgs.Role, error) {
-	return s.RoleList, nil
+// Roles lists the roles granted at the organization: the built-in ones, Manager, and the organization's own.
+func (s *Store) Roles(_ context.Context, org uuid.UUID) ([]orgs.Role, error) {
+	var out []orgs.Role
+	for _, r := range s.RoleList {
+		if r.OrgID == uuid.Nil || r.OrgID == org {
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// CreateRole records a custom role.
+func (s *Store) CreateRole(_ context.Context, _ uuid.UUID, role orgs.Role) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	for _, r := range s.RoleList {
+		if r.Name == role.Name && (r.OrgID == uuid.Nil || r.OrgID == role.OrgID) {
+			return orgs.ErrRoleNameTaken
+		}
+	}
+	s.RoleList = append(s.RoleList, role)
+	s.Events = append(s.Events, "role.created")
+	return nil
+}
+
+// UpdateRole rewrites one of the organization's own roles.
+func (s *Store) UpdateRole(_ context.Context, _ uuid.UUID, role orgs.Role) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	i := slices.IndexFunc(s.RoleList, func(r orgs.Role) bool { return r.ID == role.ID && r.OrgID == role.OrgID && !r.BuiltIn })
+	if i < 0 {
+		return orgs.ErrNotFound
+	}
+	s.RoleList[i] = role
+	s.Events = append(s.Events, "role.updated")
+	return nil
+}
+
+// DeleteRole deletes one of the organization's own roles that nobody holds, and cancels the invitations offering it.
+func (s *Store) DeleteRole(_ context.Context, _ uuid.UUID, org, role uuid.UUID, _ time.Time) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	i := slices.IndexFunc(s.RoleList, func(r orgs.Role) bool { return r.ID == role && (r.OrgID == org || r.OrgID == uuid.Nil) && !r.BuiltIn })
+	if i < 0 {
+		return orgs.ErrNotFound
+	}
+	if slices.ContainsFunc(s.Grants, func(g Grant) bool { return g.Role == role }) {
+		return orgs.ErrRoleInUse
+	}
+	for _, o := range s.Orgs {
+		if o.MembershipRoleID == role {
+			return orgs.ErrRoleInUse
+		}
+	}
+	for id, inv := range s.Invites {
+		if inv.OrgID == org && inv.RoleID == role && inv.State == orgs.StatePending {
+			inv.State = orgs.StateCancelled
+			s.Invites[id] = inv
+			s.Events = append(s.Events, "invitation.cancelled")
+		}
+	}
+	s.RoleList = slices.Delete(s.RoleList, i, i+1)
+	s.Events = append(s.Events, "role.deleted")
+	return nil
+}
+
+// GrantRole gives the member the role at the organization.
+func (s *Store) GrantRole(_ context.Context, _ uuid.UUID, org, user, role uuid.UUID) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	if s.holds(user, role, org) {
+		return orgs.ErrGranted
+	}
+	s.Grants = append(s.Grants, Grant{Principal: user, Role: role, Scope: auth.ScopeOrganization, ScopeID: org})
+	s.Events = append(s.Events, "role.granted")
+	return nil
+}
+
+// RevokeRole takes the role from the member at the organization; the Owner role stays with the last Owner.
+func (s *Store) RevokeRole(_ context.Context, _ uuid.UUID, org, user, role uuid.UUID) error {
+	if s.Fail != nil {
+		return s.Fail
+	}
+	if role == auth.RoleOwner && s.holds(user, role, org) && s.countRoleHolders(org, role) <= 1 {
+		return orgs.ErrLastOwner
+	}
+	g := Grant{Principal: user, Role: role, Scope: auth.ScopeOrganization, ScopeID: org}
+	if !slices.Contains(s.Grants, g) {
+		return orgs.ErrNotFound
+	}
+	s.Grants = slices.DeleteFunc(s.Grants, func(other Grant) bool { return other == g })
+	s.Events = append(s.Events, "role.revoked")
+	return nil
 }
 
 // countRoleHolders counts who holds role at the organization.

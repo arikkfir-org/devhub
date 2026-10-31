@@ -106,16 +106,18 @@ func (q *Queries) InsertInvitation(ctx context.Context, arg InsertInvitationPara
 }
 
 const invitation = `-- name: Invitation :one
-SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name FROM invitations i JOIN organizations o ON o.id = i.org_id WHERE i.id = $1
+SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name, coalesce(r.name, '')::text AS role_name FROM invitations i
+JOIN organizations o ON o.id = i.org_id LEFT JOIN roles r ON r.id = i.role_id WHERE i.id = $1
 `
 
 type InvitationRow struct {
 	Invitation Invitation
 	Slug       string
 	Name       string
+	RoleName   string
 }
 
-// Invitation finds an invitation with its organization's slug and name.
+// Invitation finds an invitation with its organization's slug and name, and its role's name while the role exists.
 func (q *Queries) Invitation(ctx context.Context, id uuid.UUID) (InvitationRow, error) {
 	row := q.db.QueryRow(ctx, invitation, id)
 	var i InvitationRow
@@ -132,12 +134,14 @@ func (q *Queries) Invitation(ctx context.Context, id uuid.UUID) (InvitationRow, 
 		&i.Invitation.DecidedBy,
 		&i.Slug,
 		&i.Name,
+		&i.RoleName,
 	)
 	return i, err
 }
 
 const invitationsFor = `-- name: InvitationsFor :many
-SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name FROM invitations i JOIN organizations o ON o.id = i.org_id
+SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name, coalesce(r.name, '')::text AS role_name FROM invitations i
+JOIN organizations o ON o.id = i.org_id LEFT JOIN roles r ON r.id = i.role_id
 WHERE i.email = ANY($1::text[]) AND i.state = 'pending' AND i.expires_at > $2::timestamptz ORDER BY i.created_at, i.id
 `
 
@@ -145,6 +149,7 @@ type InvitationsForRow struct {
 	Invitation Invitation
 	Slug       string
 	Name       string
+	RoleName   string
 }
 
 // InvitationsFor lists the invitations that wait for any of the emails, oldest first.
@@ -170,6 +175,7 @@ func (q *Queries) InvitationsFor(ctx context.Context, emails []string, now time.
 			&i.Invitation.DecidedBy,
 			&i.Slug,
 			&i.Name,
+			&i.RoleName,
 		); err != nil {
 			return nil, err
 		}
@@ -182,7 +188,8 @@ func (q *Queries) InvitationsFor(ctx context.Context, emails []string, now time.
 }
 
 const pendingInvitations = `-- name: PendingInvitations :many
-SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name FROM invitations i JOIN organizations o ON o.id = i.org_id
+SELECT i.id, i.org_id, i.email, i.role_id, i.invited_by, i.state, i.created_at, i.expires_at, i.decided_at, i.decided_by, o.slug, o.name, coalesce(r.name, '')::text AS role_name FROM invitations i
+JOIN organizations o ON o.id = i.org_id LEFT JOIN roles r ON r.id = i.role_id
 WHERE i.org_id = $1 AND i.state = 'pending' AND i.expires_at > $2::timestamptz ORDER BY i.created_at, i.id
 `
 
@@ -190,6 +197,7 @@ type PendingInvitationsRow struct {
 	Invitation Invitation
 	Slug       string
 	Name       string
+	RoleName   string
 }
 
 // PendingInvitations lists an organization's invitations that wait, oldest first.
@@ -215,6 +223,7 @@ func (q *Queries) PendingInvitations(ctx context.Context, orgID uuid.UUID, now t
 			&i.Invitation.DecidedBy,
 			&i.Slug,
 			&i.Name,
+			&i.RoleName,
 		); err != nil {
 			return nil, err
 		}

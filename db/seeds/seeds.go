@@ -17,4 +17,5 @@ var Go = []*goose.Migration{
 	goose.NewGoMigration(1, &goose.GoFunc{RunTx: baseline}, nil),
 	goose.NewGoMigration(2, &goose.GoFunc{RunTx: users}, nil),
 	goose.NewGoMigration(3, &goose.GoFunc{RunTx: organizations}, nil),
+	goose.NewGoMigration(4, &goose.GoFunc{RunTx: roles}, nil),
 }

@@ -113,6 +113,30 @@ func (q *Queries) InsertSeedOrganization(ctx context.Context, arg InsertSeedOrga
 	return err
 }
 
+const insertSeedRole = `-- name: InsertSeedRole :exec
+INSERT INTO roles (id, scope, name, description, permissions, built_in, org_id)
+VALUES ($1, 'organization', $2, $3, string_to_array($4::text, ','), false, $5)
+`
+
+type InsertSeedRoleParams struct {
+	ID          uuid.UUID
+	Name        string
+	Description string
+	Permissions string
+	OrgID       uuid.NullUUID
+}
+
+func (q *Queries) InsertSeedRole(ctx context.Context, arg InsertSeedRoleParams) error {
+	_, err := q.db.ExecContext(ctx, insertSeedRole,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.Permissions,
+		arg.OrgID,
+	)
+	return err
+}
+
 const insertSeedSlug = `-- name: InsertSeedSlug :exec
 INSERT INTO organization_slugs (slug, org_id) VALUES ($1, $2)
 `

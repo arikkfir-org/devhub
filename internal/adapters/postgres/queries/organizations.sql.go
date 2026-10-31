@@ -261,7 +261,7 @@ func (q *Queries) OrganizationBySlug(ctx context.Context, slug string) (Organiza
 }
 
 const organizationGrants = `-- name: OrganizationGrants :many
-SELECT g.principal_id, r.id, r.scope, r.name, r.description, r.permissions, r.built_in FROM grants g JOIN roles r ON r.id = g.role_id
+SELECT g.principal_id, r.id, r.scope, r.name, r.description, r.permissions, r.built_in, r.org_id FROM grants g JOIN roles r ON r.id = g.role_id
 WHERE g.scope = 'organization' AND g.scope_id = $1::uuid ORDER BY g.principal_id, r.name
 `
 
@@ -288,6 +288,7 @@ func (q *Queries) OrganizationGrants(ctx context.Context, orgID uuid.UUID) ([]Or
 			&i.Role.Description,
 			&i.Role.Permissions,
 			&i.Role.BuiltIn,
+			&i.Role.OrgID,
 		); err != nil {
 			return nil, err
 		}
@@ -364,7 +365,7 @@ func (q *Queries) Permissions(ctx context.Context, principalID uuid.UUID, scope 
 }
 
 const role = `-- name: Role :one
-SELECT id, scope, name, description, permissions, built_in FROM roles WHERE id = $1
+SELECT id, scope, name, description, permissions, built_in, org_id FROM roles WHERE id = $1
 `
 
 func (q *Queries) Role(ctx context.Context, id uuid.UUID) (Role, error) {
@@ -377,40 +378,9 @@ func (q *Queries) Role(ctx context.Context, id uuid.UUID) (Role, error) {
 		&i.Description,
 		&i.Permissions,
 		&i.BuiltIn,
+		&i.OrgID,
 	)
 	return i, err
-}
-
-const rolesAt = `-- name: RolesAt :many
-SELECT id, scope, name, description, permissions, built_in FROM roles WHERE scope = $1 ORDER BY built_in DESC, name
-`
-
-// RolesAt lists the roles granted at a scope, the built-in ones first.
-func (q *Queries) RolesAt(ctx context.Context, scope string) ([]Role, error) {
-	rows, err := q.db.Query(ctx, rolesAt, scope)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Role
-	for rows.Next() {
-		var i Role
-		if err := rows.Scan(
-			&i.ID,
-			&i.Scope,
-			&i.Name,
-			&i.Description,
-			&i.Permissions,
-			&i.BuiltIn,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const updateOrganization = `-- name: UpdateOrganization :execrows

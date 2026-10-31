@@ -19,15 +19,30 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
-// Defines values for ListRolesParamsScope.
+// Defines values for ListPermissionsParamsScope.
 const (
-	ListRolesParamsScopeOrganization ListRolesParamsScope = "organization"
+	ListPermissionsParamsScopeOrganization ListPermissionsParamsScope = "organization"
 )
 
-// Valid indicates whether the value is a known member of the ListRolesParamsScope enum.
-func (e ListRolesParamsScope) Valid() bool {
+// Valid indicates whether the value is a known member of the ListPermissionsParamsScope enum.
+func (e ListPermissionsParamsScope) Valid() bool {
 	switch e {
-	case ListRolesParamsScopeOrganization:
+	case ListPermissionsParamsScopeOrganization:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListBuiltInRolesParamsScope.
+const (
+	ListBuiltInRolesParamsScopeOrganization ListBuiltInRolesParamsScope = "organization"
+)
+
+// Valid indicates whether the value is a known member of the ListBuiltInRolesParamsScope enum.
+func (e ListBuiltInRolesParamsScope) Valid() bool {
+	switch e {
+	case ListBuiltInRolesParamsScopeOrganization:
 		return true
 	default:
 		return false
@@ -50,6 +65,9 @@ type Invitation struct {
 	OrgName   string             `json:"orgName"`
 	OrgSlug   string             `json:"orgSlug"`
 	RoleId    openapi_types.UUID `json:"roleId"`
+
+	// RoleName The role's name; empty once a custom role it offered is gone.
+	RoleName string `json:"roleName"`
 }
 
 // JoinRequest A user's request to join an organization, waiting for a member manager.
@@ -125,13 +143,32 @@ type Problem struct {
 	Type string `json:"type"`
 }
 
-// Role defines model for Role.
+// Role A role granted at the organization, built in or its own.
 type Role struct {
 	BuiltIn     bool               `json:"builtIn"`
 	Description string             `json:"description"`
 	Id          openapi_types.UUID `json:"id"`
 	Name        string             `json:"name"`
-	Permissions []string           `json:"permissions"`
+
+	// OrgId The organization a custom role belongs to; absent on a built-in role.
+	OrgId       *openapi_types.UUID `json:"orgId,omitempty"`
+	Permissions []string            `json:"permissions"`
+}
+
+// RoleChanges What changes about a custom role; a field left out keeps its value.
+type RoleChanges struct {
+	Description *string   `json:"description,omitempty"`
+	Name        *string   `json:"name,omitempty"`
+	Permissions *[]string `json:"permissions,omitempty"`
+}
+
+// RoleInput A custom role's definition.
+type RoleInput struct {
+	Description *string `json:"description,omitempty"`
+	Name        string  `json:"name"`
+
+	// Permissions From the permissions listed at scope organization; at least one.
+	Permissions []string `json:"permissions"`
 }
 
 // Session A signed-in browser.
@@ -175,6 +212,12 @@ type Id = openapi_types.UUID
 // Org defines model for org.
 type Org = string
 
+// RoleID defines model for role.
+type RoleID = openapi_types.UUID
+
+// UserID defines model for user.
+type UserID = openapi_types.UUID
+
 // CreateOrganizationJSONBody defines parameters for CreateOrganization.
 type CreateOrganizationJSONBody struct {
 	Name string `json:"name"`
@@ -203,13 +246,26 @@ type ApproveJoinRequestJSONBody struct {
 	RoleId *openapi_types.UUID `json:"roleId,omitempty"`
 }
 
-// ListRolesParams defines parameters for ListRoles.
-type ListRolesParams struct {
-	Scope ListRolesParamsScope `form:"scope" json:"scope"`
+// GrantRoleJSONBody defines parameters for GrantRole.
+type GrantRoleJSONBody struct {
+	RoleId openapi_types.UUID `json:"roleId"`
 }
 
-// ListRolesParamsScope defines parameters for ListRoles.
-type ListRolesParamsScope string
+// ListPermissionsParams defines parameters for ListPermissions.
+type ListPermissionsParams struct {
+	Scope ListPermissionsParamsScope `form:"scope" json:"scope"`
+}
+
+// ListPermissionsParamsScope defines parameters for ListPermissions.
+type ListPermissionsParamsScope string
+
+// ListBuiltInRolesParams defines parameters for ListBuiltInRoles.
+type ListBuiltInRolesParams struct {
+	Scope ListBuiltInRolesParamsScope `form:"scope" json:"scope"`
+}
+
+// ListBuiltInRolesParamsScope defines parameters for ListBuiltInRoles.
+type ListBuiltInRolesParamsScope string
 
 // CreateOrganizationJSONRequestBody defines body for CreateOrganization for application/json ContentType.
 type CreateOrganizationJSONRequestBody CreateOrganizationJSONBody
@@ -225,6 +281,15 @@ type RequestToJoinJSONRequestBody RequestToJoinJSONBody
 
 // ApproveJoinRequestJSONRequestBody defines body for ApproveJoinRequest for application/json ContentType.
 type ApproveJoinRequestJSONRequestBody ApproveJoinRequestJSONBody
+
+// GrantRoleJSONRequestBody defines body for GrantRole for application/json ContentType.
+type GrantRoleJSONRequestBody GrantRoleJSONBody
+
+// CreateRoleJSONRequestBody defines body for CreateRole for application/json ContentType.
+type CreateRoleJSONRequestBody = RoleInput
+
+// UpdateRoleJSONRequestBody defines body for UpdateRole for application/json ContentType.
+type UpdateRoleJSONRequestBody = RoleChanges
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -290,10 +355,33 @@ type ServerInterface interface {
 	ListMembers(w http.ResponseWriter, r *http.Request, org Org)
 	// RemoveMember Removes a member, with every role they hold; takes org.members.manage and every permission of those roles.
 	// (DELETE /orgs/{org}/members/{user})
-	RemoveMember(w http.ResponseWriter, r *http.Request, org Org, user openapi_types.UUID)
-	// ListRoles The roles granted at a scope, the built-in ones first.
+	RemoveMember(w http.ResponseWriter, r *http.Request, org Org, userID UserID)
+	// GrantRole Gives a member a role; takes org.grants.manage and every permission of the role.
+	// (POST /orgs/{org}/members/{user}/roles)
+	GrantRole(w http.ResponseWriter, r *http.Request, org Org, userID UserID)
+	// RevokeRole Takes a role from a member; takes org.grants.manage and every permission of the role. The last Owner keeps Owner.
+	// (DELETE /orgs/{org}/members/{user}/roles/{role})
+	RevokeRole(w http.ResponseWriter, r *http.Request, org Org, userID UserID, roleID RoleID)
+	// ListRoles The roles the organization grants, the built-in ones first, then its own; takes org.read.
+	// (GET /orgs/{org}/roles)
+	ListRoles(w http.ResponseWriter, r *http.Request, org Org)
+	// CreateRole Defines a custom role; takes org.grants.manage and every permission it lists.
+	// (POST /orgs/{org}/roles)
+	CreateRole(w http.ResponseWriter, r *http.Request, org Org)
+	// DeleteRole Deletes a custom role nobody holds, cancelling the invitations that offered it; takes org.grants.manage and every permission of the role.
+	// (DELETE /orgs/{org}/roles/{role})
+	DeleteRole(w http.ResponseWriter, r *http.Request, org Org, roleID RoleID)
+	// UpdateRole Redefines a custom role, and with it every grant of it; takes org.grants.manage and every permission it listed or lists.
+	// (PATCH /orgs/{org}/roles/{role})
+	UpdateRole(w http.ResponseWriter, r *http.Request, org Org, roleID RoleID)
+	// ListPermissions The permissions a role granted at a scope may hold, from the catalog.
+	// (GET /permissions)
+	ListPermissions(w http.ResponseWriter, r *http.Request, params ListPermissionsParams)
+	// ListBuiltInRoles The built-in roles granted at a scope. Deprecated, since roles are an organization's; the organization's roles list them all.
 	// (GET /roles)
-	ListRoles(w http.ResponseWriter, r *http.Request, params ListRolesParams)
+	//
+	// Deprecated: this operation has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	ListBuiltInRoles(w http.ResponseWriter, r *http.Request, params ListBuiltInRolesParams)
 	// GetVersion The version of Cobranch that serves this installation.
 	// (GET /version)
 	GetVersion(w http.ResponseWriter, r *http.Request)
@@ -799,16 +887,95 @@ func (siw *ServerInterfaceWrapper) RemoveMember(w http.ResponseWriter, r *http.R
 	}
 
 	// ------------- Path parameter "user" -------------
-	var user openapi_types.UUID
+	var userID UserID
 
-	err = runtime.BindStyledParameterWithOptions("simple", "user", r.PathValue("user"), &user, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	err = runtime.BindStyledParameterWithOptions("simple", "user", r.PathValue("user"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
 	if err != nil {
 		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user", Err: err})
 		return
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.RemoveMember(w, r, org, user)
+		siw.Handler.RemoveMember(w, r, org, userID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GrantRole operation middleware
+func (siw *ServerInterfaceWrapper) GrantRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "user" -------------
+	var userID UserID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "user", r.PathValue("user"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GrantRole(w, r, org, userID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokeRole operation middleware
+func (siw *ServerInterfaceWrapper) RevokeRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "user" -------------
+	var userID UserID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "user", r.PathValue("user"), &userID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "user", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "role" -------------
+	var roleID RoleID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "role", r.PathValue("role"), &roleID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokeRole(w, r, org, userID, roleID)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -824,8 +991,130 @@ func (siw *ServerInterfaceWrapper) ListRoles(w http.ResponseWriter, r *http.Requ
 	var err error
 	_ = err
 
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListRoles(w, r, org)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateRole operation middleware
+func (siw *ServerInterfaceWrapper) CreateRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateRole(w, r, org)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeleteRole operation middleware
+func (siw *ServerInterfaceWrapper) DeleteRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "role" -------------
+	var roleID RoleID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "role", r.PathValue("role"), &roleID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeleteRole(w, r, org, roleID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// UpdateRole operation middleware
+func (siw *ServerInterfaceWrapper) UpdateRole(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "org" -------------
+	var org Org
+
+	err = runtime.BindStyledParameterWithOptions("simple", "org", r.PathValue("org"), &org, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "org", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "role" -------------
+	var roleID RoleID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "role", r.PathValue("role"), &roleID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "role", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UpdateRole(w, r, org, roleID)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListPermissions operation middleware
+func (siw *ServerInterfaceWrapper) ListPermissions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
 	// Parameter object where we will unmarshal all parameters from the context
-	var params ListRolesParams
+	var params ListPermissionsParams
 
 	// ------------- Required query parameter "scope" -------------
 
@@ -841,7 +1130,40 @@ func (siw *ServerInterfaceWrapper) ListRoles(w http.ResponseWriter, r *http.Requ
 	}
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListRoles(w, r, params)
+		siw.Handler.ListPermissions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListBuiltInRoles operation middleware
+func (siw *ServerInterfaceWrapper) ListBuiltInRoles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListBuiltInRolesParams
+
+	// ------------- Required query parameter "scope" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "scope", r.URL.Query(), &params.Scope, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "scope"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "scope", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListBuiltInRoles(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -994,13 +1316,20 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/me/invitations/{id}/accept", wrapper.AcceptInvitation)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/me/invitations/{id}/decline", wrapper.DeclineInvitation)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/me/join-requests", wrapper.ListMyJoinRequests)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/roles", wrapper.ListRoles)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/roles", wrapper.ListBuiltInRoles)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/permissions", wrapper.ListPermissions)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/orgs", wrapper.CreateOrganization)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/orgs/{org}", wrapper.GetOrganization)
 	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/orgs/{org}", wrapper.UpdateOrganization)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/orgs/{org}/leave", wrapper.LeaveOrganization)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/orgs/{org}/members", wrapper.ListMembers)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/orgs/{org}/members/{user}", wrapper.RemoveMember)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/orgs/{org}/members/{user}/roles", wrapper.GrantRole)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/orgs/{org}/members/{user}/roles/{role}", wrapper.RevokeRole)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/orgs/{org}/roles", wrapper.ListRoles)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/orgs/{org}/roles", wrapper.CreateRole)
+	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/orgs/{org}/roles/{role}", wrapper.DeleteRole)
+	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/orgs/{org}/roles/{role}", wrapper.UpdateRole)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/orgs/{org}/invitations", wrapper.ListInvitations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/orgs/{org}/invitations", wrapper.Invite)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/orgs/{org}/invitations/{id}", wrapper.CancelInvitation)
@@ -2571,8 +2900,8 @@ func (response ListMembersdefaultApplicationProblemPlusJSONResponse) VisitListMe
 }
 
 type RemoveMemberRequestObject struct {
-	Org  Org                `json:"org"`
-	User openapi_types.UUID `json:"user"`
+	Org    Org    `json:"org"`
+	UserID UserID `json:"user"`
 }
 
 type RemoveMemberResponseObject interface {
@@ -2662,8 +2991,208 @@ func (response RemoveMemberdefaultApplicationProblemPlusJSONResponse) VisitRemov
 	return err
 }
 
+type GrantRoleRequestObject struct {
+	Org    Org    `json:"org"`
+	UserID UserID `json:"user"`
+	Body   *GrantRoleJSONRequestBody
+}
+
+type GrantRoleResponseObject interface {
+	VisitGrantRoleResponse(w http.ResponseWriter) error
+}
+
+type GrantRole204Response struct {
+}
+
+func (response GrantRole204Response) VisitGrantRoleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type GrantRole400ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response GrantRole400ApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GrantRole401ApplicationProblemPlusJSONResponse Problem
+
+func (response GrantRole401ApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GrantRole403ApplicationProblemPlusJSONResponse Problem
+
+func (response GrantRole403ApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GrantRole404ApplicationProblemPlusJSONResponse Problem
+
+func (response GrantRole404ApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GrantRole409ApplicationProblemPlusJSONResponse Problem
+
+func (response GrantRole409ApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GrantRoledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response GrantRoledefaultApplicationProblemPlusJSONResponse) VisitGrantRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeRoleRequestObject struct {
+	Org    Org    `json:"org"`
+	UserID UserID `json:"user"`
+	RoleID RoleID `json:"role"`
+}
+
+type RevokeRoleResponseObject interface {
+	VisitRevokeRoleResponse(w http.ResponseWriter) error
+}
+
+type RevokeRole204Response struct {
+}
+
+func (response RevokeRole204Response) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokeRole401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response RevokeRole401ApplicationProblemPlusJSONResponse) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeRole403ApplicationProblemPlusJSONResponse Problem
+
+func (response RevokeRole403ApplicationProblemPlusJSONResponse) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeRole404ApplicationProblemPlusJSONResponse Problem
+
+func (response RevokeRole404ApplicationProblemPlusJSONResponse) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeRole409ApplicationProblemPlusJSONResponse Problem
+
+func (response RevokeRole409ApplicationProblemPlusJSONResponse) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokeRoledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response RevokeRoledefaultApplicationProblemPlusJSONResponse) VisitRevokeRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListRolesRequestObject struct {
-	Params ListRolesParams
+	Org Org `json:"org"`
 }
 
 type ListRolesResponseObject interface {
@@ -2702,12 +3231,471 @@ func (response ListRoles401ApplicationProblemPlusJSONResponse) VisitListRolesRes
 	return err
 }
 
+type ListRoles404ApplicationProblemPlusJSONResponse Problem
+
+func (response ListRoles404ApplicationProblemPlusJSONResponse) VisitListRolesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ListRolesdefaultApplicationProblemPlusJSONResponse struct {
 	Body       Problem
 	StatusCode int
 }
 
 func (response ListRolesdefaultApplicationProblemPlusJSONResponse) VisitListRolesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRoleRequestObject struct {
+	Org  Org `json:"org"`
+	Body *CreateRoleJSONRequestBody
+}
+
+type CreateRoleResponseObject interface {
+	VisitCreateRoleResponse(w http.ResponseWriter) error
+}
+
+type CreateRole201JSONResponse Role
+
+func (response CreateRole201JSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRole400ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response CreateRole400ApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRole401ApplicationProblemPlusJSONResponse Problem
+
+func (response CreateRole401ApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRole403ApplicationProblemPlusJSONResponse Problem
+
+func (response CreateRole403ApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRole404ApplicationProblemPlusJSONResponse Problem
+
+func (response CreateRole404ApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRole409ApplicationProblemPlusJSONResponse Problem
+
+func (response CreateRole409ApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRoledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response CreateRoledefaultApplicationProblemPlusJSONResponse) VisitCreateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRoleRequestObject struct {
+	Org    Org    `json:"org"`
+	RoleID RoleID `json:"role"`
+}
+
+type DeleteRoleResponseObject interface {
+	VisitDeleteRoleResponse(w http.ResponseWriter) error
+}
+
+type DeleteRole204Response struct {
+}
+
+func (response DeleteRole204Response) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type DeleteRole401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response DeleteRole401ApplicationProblemPlusJSONResponse) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRole403ApplicationProblemPlusJSONResponse Problem
+
+func (response DeleteRole403ApplicationProblemPlusJSONResponse) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRole404ApplicationProblemPlusJSONResponse Problem
+
+func (response DeleteRole404ApplicationProblemPlusJSONResponse) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRole409ApplicationProblemPlusJSONResponse Problem
+
+func (response DeleteRole409ApplicationProblemPlusJSONResponse) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeleteRoledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response DeleteRoledefaultApplicationProblemPlusJSONResponse) VisitDeleteRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRoleRequestObject struct {
+	Org    Org    `json:"org"`
+	RoleID RoleID `json:"role"`
+	Body   *UpdateRoleJSONRequestBody
+}
+
+type UpdateRoleResponseObject interface {
+	VisitUpdateRoleResponse(w http.ResponseWriter) error
+}
+
+type UpdateRole200JSONResponse Role
+
+func (response UpdateRole200JSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRole400ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response UpdateRole400ApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRole401ApplicationProblemPlusJSONResponse Problem
+
+func (response UpdateRole401ApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRole403ApplicationProblemPlusJSONResponse Problem
+
+func (response UpdateRole403ApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRole404ApplicationProblemPlusJSONResponse Problem
+
+func (response UpdateRole404ApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRole409ApplicationProblemPlusJSONResponse Problem
+
+func (response UpdateRole409ApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UpdateRoledefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response UpdateRoledefaultApplicationProblemPlusJSONResponse) VisitUpdateRoleResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPermissionsRequestObject struct {
+	Params ListPermissionsParams
+}
+
+type ListPermissionsResponseObject interface {
+	VisitListPermissionsResponse(w http.ResponseWriter) error
+}
+
+type ListPermissions200JSONResponse struct {
+	Permissions []string `json:"permissions"`
+}
+
+func (response ListPermissions200JSONResponse) VisitListPermissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPermissions401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response ListPermissions401ApplicationProblemPlusJSONResponse) VisitListPermissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListPermissionsdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListPermissionsdefaultApplicationProblemPlusJSONResponse) VisitListPermissionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListBuiltInRolesRequestObject struct {
+	Params ListBuiltInRolesParams
+}
+
+type ListBuiltInRolesResponseObject interface {
+	VisitListBuiltInRolesResponse(w http.ResponseWriter) error
+}
+
+type ListBuiltInRoles200ResponseHeaders struct {
+	Deprecation *string
+	Sunset      *string
+}
+
+type ListBuiltInRoles200JSONResponse struct {
+	Body struct {
+		Roles []Role `json:"roles"`
+	}
+	Headers ListBuiltInRoles200ResponseHeaders
+}
+
+func (response ListBuiltInRoles200JSONResponse) VisitListBuiltInRolesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.Deprecation != nil {
+		w.Header().Set("Deprecation", fmt.Sprint(*response.Headers.Deprecation))
+	}
+	if response.Headers.Sunset != nil {
+		w.Header().Set("Sunset", fmt.Sprint(*response.Headers.Sunset))
+	}
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListBuiltInRoles401ApplicationProblemPlusJSONResponse struct {
+	ProblemApplicationProblemPlusJSONResponse
+}
+
+func (response ListBuiltInRoles401ApplicationProblemPlusJSONResponse) VisitListBuiltInRolesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListBuiltInRolesdefaultApplicationProblemPlusJSONResponse struct {
+	Body       Problem
+	StatusCode int
+}
+
+func (response ListBuiltInRolesdefaultApplicationProblemPlusJSONResponse) VisitListBuiltInRolesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -2822,9 +3810,32 @@ type StrictServerInterface interface {
 	// RemoveMember Removes a member, with every role they hold; takes org.members.manage and every permission of those roles.
 	// (DELETE /orgs/{org}/members/{user})
 	RemoveMember(ctx context.Context, request RemoveMemberRequestObject) (RemoveMemberResponseObject, error)
-	// ListRoles The roles granted at a scope, the built-in ones first.
-	// (GET /roles)
+	// GrantRole Gives a member a role; takes org.grants.manage and every permission of the role.
+	// (POST /orgs/{org}/members/{user}/roles)
+	GrantRole(ctx context.Context, request GrantRoleRequestObject) (GrantRoleResponseObject, error)
+	// RevokeRole Takes a role from a member; takes org.grants.manage and every permission of the role. The last Owner keeps Owner.
+	// (DELETE /orgs/{org}/members/{user}/roles/{role})
+	RevokeRole(ctx context.Context, request RevokeRoleRequestObject) (RevokeRoleResponseObject, error)
+	// ListRoles The roles the organization grants, the built-in ones first, then its own; takes org.read.
+	// (GET /orgs/{org}/roles)
 	ListRoles(ctx context.Context, request ListRolesRequestObject) (ListRolesResponseObject, error)
+	// CreateRole Defines a custom role; takes org.grants.manage and every permission it lists.
+	// (POST /orgs/{org}/roles)
+	CreateRole(ctx context.Context, request CreateRoleRequestObject) (CreateRoleResponseObject, error)
+	// DeleteRole Deletes a custom role nobody holds, cancelling the invitations that offered it; takes org.grants.manage and every permission of the role.
+	// (DELETE /orgs/{org}/roles/{role})
+	DeleteRole(ctx context.Context, request DeleteRoleRequestObject) (DeleteRoleResponseObject, error)
+	// UpdateRole Redefines a custom role, and with it every grant of it; takes org.grants.manage and every permission it listed or lists.
+	// (PATCH /orgs/{org}/roles/{role})
+	UpdateRole(ctx context.Context, request UpdateRoleRequestObject) (UpdateRoleResponseObject, error)
+	// ListPermissions The permissions a role granted at a scope may hold, from the catalog.
+	// (GET /permissions)
+	ListPermissions(ctx context.Context, request ListPermissionsRequestObject) (ListPermissionsResponseObject, error)
+	// ListBuiltInRoles The built-in roles granted at a scope. Deprecated, since roles are an organization's; the organization's roles list them all.
+	// (GET /roles)
+	//
+	// Deprecated: this operation has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	ListBuiltInRoles(ctx context.Context, request ListBuiltInRolesRequestObject) (ListBuiltInRolesResponseObject, error)
 	// GetVersion The version of Cobranch that serves this installation.
 	// (GET /version)
 	GetVersion(ctx context.Context, request GetVersionRequestObject) (GetVersionResponseObject, error)
@@ -3419,11 +4430,11 @@ func (sh *strictHandler) ListMembers(w http.ResponseWriter, r *http.Request, org
 }
 
 // RemoveMember operation middleware
-func (sh *strictHandler) RemoveMember(w http.ResponseWriter, r *http.Request, org Org, user openapi_types.UUID) {
+func (sh *strictHandler) RemoveMember(w http.ResponseWriter, r *http.Request, org Org, userID UserID) {
 	var request RemoveMemberRequestObject
 
 	request.Org = org
-	request.User = user
+	request.UserID = userID
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.RemoveMember(ctx, request.(RemoveMemberRequestObject))
@@ -3445,11 +4456,73 @@ func (sh *strictHandler) RemoveMember(w http.ResponseWriter, r *http.Request, or
 	}
 }
 
+// GrantRole operation middleware
+func (sh *strictHandler) GrantRole(w http.ResponseWriter, r *http.Request, org Org, userID UserID) {
+	var request GrantRoleRequestObject
+
+	request.Org = org
+	request.UserID = userID
+
+	var body GrantRoleJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GrantRole(ctx, request.(GrantRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GrantRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GrantRoleResponseObject); ok {
+		if err := validResponse.VisitGrantRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokeRole operation middleware
+func (sh *strictHandler) RevokeRole(w http.ResponseWriter, r *http.Request, org Org, userID UserID, roleID RoleID) {
+	var request RevokeRoleRequestObject
+
+	request.Org = org
+	request.UserID = userID
+	request.RoleID = roleID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokeRole(ctx, request.(RevokeRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokeRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokeRoleResponseObject); ok {
+		if err := validResponse.VisitRevokeRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ListRoles operation middleware
-func (sh *strictHandler) ListRoles(w http.ResponseWriter, r *http.Request, params ListRolesParams) {
+func (sh *strictHandler) ListRoles(w http.ResponseWriter, r *http.Request, org Org) {
 	var request ListRolesRequestObject
 
-	request.Params = params
+	request.Org = org
 
 	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
 		return sh.ssi.ListRoles(ctx, request.(ListRolesRequestObject))
@@ -3464,6 +4537,152 @@ func (sh *strictHandler) ListRoles(w http.ResponseWriter, r *http.Request, param
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListRolesResponseObject); ok {
 		if err := validResponse.VisitListRolesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateRole operation middleware
+func (sh *strictHandler) CreateRole(w http.ResponseWriter, r *http.Request, org Org) {
+	var request CreateRoleRequestObject
+
+	request.Org = org
+
+	var body CreateRoleJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateRole(ctx, request.(CreateRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateRoleResponseObject); ok {
+		if err := validResponse.VisitCreateRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeleteRole operation middleware
+func (sh *strictHandler) DeleteRole(w http.ResponseWriter, r *http.Request, org Org, roleID RoleID) {
+	var request DeleteRoleRequestObject
+
+	request.Org = org
+	request.RoleID = roleID
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeleteRole(ctx, request.(DeleteRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeleteRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeleteRoleResponseObject); ok {
+		if err := validResponse.VisitDeleteRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateRole operation middleware
+func (sh *strictHandler) UpdateRole(w http.ResponseWriter, r *http.Request, org Org, roleID RoleID) {
+	var request UpdateRoleRequestObject
+
+	request.Org = org
+	request.RoleID = roleID
+
+	var body UpdateRoleJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateRole(ctx, request.(UpdateRoleRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateRole")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UpdateRoleResponseObject); ok {
+		if err := validResponse.VisitUpdateRoleResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListPermissions operation middleware
+func (sh *strictHandler) ListPermissions(w http.ResponseWriter, r *http.Request, params ListPermissionsParams) {
+	var request ListPermissionsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListPermissions(ctx, request.(ListPermissionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListPermissions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListPermissionsResponseObject); ok {
+		if err := validResponse.VisitListPermissionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListBuiltInRoles operation middleware
+func (sh *strictHandler) ListBuiltInRoles(w http.ResponseWriter, r *http.Request, params ListBuiltInRolesParams) {
+	var request ListBuiltInRolesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListBuiltInRoles(ctx, request.(ListBuiltInRolesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListBuiltInRoles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListBuiltInRolesResponseObject); ok {
+		if err := validResponse.VisitListBuiltInRolesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

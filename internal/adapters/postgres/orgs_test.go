@@ -153,8 +153,8 @@ func TestOrgStoreMembers(t *testing.T) {
 	if err != nil || len(list) != 1 || list[0].Slug != "acme" {
 		t.Errorf("OrganizationsOf(max) = %+v, %v", list, err)
 	}
-	if n, err := f.s.CountRoleHolders(ctx, f.acme.ID, auth.RoleOwner); err != nil || n != 1 {
-		t.Errorf("CountRoleHolders(Owner) = %d, %v", n, err)
+	if roles, err := f.s.Roles(ctx, f.acme.ID); err != nil || len(roles) != 3 || roles[0].Name != "Guest" || roles[0].OrgID != uuid.Nil {
+		t.Errorf("Roles() = %+v, %v, want the three built-in organization roles", roles, err)
 	}
 	if err := f.s.Leave(ctx, f.olivia, f.acme.ID, f.max, now); err != nil {
 		t.Fatal(err)
@@ -341,7 +341,7 @@ func TestOrgStoreLeave(t *testing.T) {
 func TestOrgStoreRolesAndExpiry(t *testing.T) {
 	f := newOrgFixture(t)
 	ctx := context.Background()
-	roles, err := f.s.Roles(ctx)
+	roles, err := f.s.Roles(ctx, f.acme.ID)
 	if err != nil || len(roles) != 3 || roles[0].Name != "Guest" || !roles[0].BuiltIn {
 		t.Errorf("Roles() = %+v, %v, want Guest, Member and Owner", roles, err)
 	}
